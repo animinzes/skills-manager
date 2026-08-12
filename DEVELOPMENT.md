@@ -9,16 +9,16 @@ the upstream storage and deployment model.
 - Upstream: `xingkongliang/skills-manager`
 - Starting release: `v1.33.1`
 - Starting commit: `f4488b7f3ddfb3b76afc521a2fa6634031c784d1`
-- Primary branch: `main`
-- Integration branch: `feature/skill-control-foundation`
+- Upstream mirror branch: `main`
+- Personal development branch: `skill-control`
 
 Keep `upstream` read-only. Use `origin` for the fork. Before starting a feature:
 
 ```powershell
 git fetch upstream --prune --tags
-git switch main
+git switch skill-control
 git merge --ff-only upstream/main
-git push origin main
+git push origin skill-control
 git switch -c feature/<scope>
 ```
 
@@ -48,7 +48,7 @@ platform cannot run every target.
 
 ## Work packages
 
-Use separate pull requests for these packages:
+Use separate feature branches or commits for these packages:
 
 1. `feature/governance-metadata`: schema, ownership, provenance, permissions,
    supported agents, and migration rules.
@@ -61,13 +61,15 @@ Use separate pull requests for these packages:
 5. `feature/local-api`: a local API and MCP-facing adapter over the same domain
    services used by the GUI and CLI.
 
-Every package must include migration behavior, failure behavior, and tests. A
-pull request must avoid mixing dependency upgrades with feature implementation.
+Every package must include migration behavior, failure behavior, and tests.
+Dependency upgrades must remain separate from feature implementation.
 
-## Pull request policy
+## Personal fork policy
 
-- Target the fork's `main` branch unless the change is intended for upstream.
-- Keep each pull request independently buildable and reversible.
+- Keep `main` as an upstream mirror and use `skill-control` for the working app.
+- Push completed personal changes directly to `skill-control` after local checks.
+- Do not create pull requests or GitHub issues for personal development work.
+- Keep each commit independently buildable and reversible.
 - Record schema and storage changes explicitly.
 - Include Windows path, symlink, and junction cases when filesystem behavior
   changes.
