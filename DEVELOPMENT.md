@@ -46,6 +46,16 @@ cargo test --manifest-path src-tauri/Cargo.toml
 The GitHub workflows provide the Rust matrix and frontend checks when a local
 platform cannot run every target.
 
+For an isolated Windows package, run:
+
+```powershell
+.\scripts\build-skill-control.ps1
+```
+
+This command keeps npm, Cargo registry, and Rust build caches beside the D-drive
+workspace for this checkout. It builds `Skill Control` with a separate app
+identifier and does not require the upstream updater signing key.
+
 ## Work packages
 
 Use separate feature branches or commits for these packages:

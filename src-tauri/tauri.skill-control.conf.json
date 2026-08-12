@@ -1,0 +1,15 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Skill Control",
+  "identifier": "com.animinzes.skillcontrol",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/animinzes/skills-manager/releases/latest/download/latest.json"
+      ]
+    }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  }
+}
