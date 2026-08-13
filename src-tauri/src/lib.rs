@@ -1012,6 +1012,8 @@ pub fn run() {
             commands::skills::set_skill_tags,
             commands::skills::rename_tag,
             commands::skills::delete_tag,
+            commands::governance::get_skill_governance,
+            commands::governance::save_skill_governance,
             commands::skills::cancel_install,
             commands::skills::batch_import_folder,
             // Sync

@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 7;
+const LATEST_VERSION: u32 = 8;
 
 /// Run all pending migrations on the database.
 ///
@@ -54,6 +54,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         4 => migrate_v4_to_v5(conn),
         5 => migrate_v5_to_v6(conn),
         6 => migrate_v6_to_v7(conn),
+        7 => migrate_v7_to_v8(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -294,6 +295,55 @@ fn migrate_v6_to_v7(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v7 → v8: Add normalized skill-governance metadata. These tables remain
+/// separate from `skills` so upstream skill storage stays compatible.
+fn migrate_v7_to_v8(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS skill_governance (
+            skill_id TEXT PRIMARY KEY REFERENCES skills(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL DEFAULT 'capability',
+            provenance TEXT NOT NULL DEFAULT 'unknown',
+            owner TEXT,
+            maintainer TEXT,
+            lifecycle TEXT NOT NULL DEFAULT 'active',
+            risk_level TEXT NOT NULL DEFAULT 'unreviewed',
+            filesystem_access TEXT NOT NULL DEFAULT 'unknown',
+            network_access TEXT NOT NULL DEFAULT 'unknown',
+            command_execution TEXT NOT NULL DEFAULT 'unknown',
+            account_access TEXT NOT NULL DEFAULT 'unknown',
+            secrets_access TEXT NOT NULL DEFAULT 'unknown',
+            notes TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS skill_agent_support (
+            skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            agent_key TEXT NOT NULL,
+            support_level TEXT NOT NULL DEFAULT 'unknown',
+            notes TEXT,
+            PRIMARY KEY(skill_id, agent_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_agent_support_agent
+            ON skill_agent_support(agent_key);
+
+        CREATE TABLE IF NOT EXISTS skill_dependencies (
+            skill_id TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+            dependency_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            version_requirement TEXT,
+            required INTEGER NOT NULL DEFAULT 1,
+            check_command TEXT,
+            PRIMARY KEY(skill_id, dependency_type, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_skill_dependencies_name
+            ON skill_dependencies(dependency_type, name);
+        ",
+    )?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -362,6 +412,9 @@ mod tests {
         assert!(tables.contains(&"skill_tags".to_string()));
         assert!(tables.contains(&"scenario_skill_tools".to_string()));
         assert!(tables.contains(&"audit_log".to_string()));
+        assert!(tables.contains(&"skill_governance".to_string()));
+        assert!(tables.contains(&"skill_agent_support".to_string()));
+        assert!(tables.contains(&"skill_dependencies".to_string()));
     }
 
     #[test]
@@ -377,6 +430,39 @@ mod tests {
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
         assert_eq!(version, LATEST_VERSION);
+    }
+
+    #[test]
+    fn test_v7_database_upgrades_to_governance_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE skill_dependencies;
+             DROP TABLE skill_agent_support;
+             DROP TABLE skill_governance;
+             PRAGMA user_version = 7;",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(tables.contains(&"skill_governance".to_string()));
+        assert!(tables.contains(&"skill_agent_support".to_string()));
+        assert!(tables.contains(&"skill_dependencies".to_string()));
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+                .unwrap(),
+            LATEST_VERSION
+        );
     }
 
     #[test]

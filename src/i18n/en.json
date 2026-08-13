@@ -221,6 +221,85 @@
     "restoreSuccess": "Backup restored — your skills are ready.",
     "hint": "You can connect or restore a backup at any time from the Backup page in the sidebar."
   },
+  "governance": {
+    "title": "Skill governance",
+    "subtitle": "Classification, ownership, risk, and dependencies",
+    "loading": "Loading governance profile",
+    "edit": "Edit governance",
+    "saved": "Governance profile saved",
+    "kind": "Skill kind",
+    "provenance": "Provenance",
+    "lifecycle": "Lifecycle",
+    "risk": "Risk level",
+    "owner": "Owner or team",
+    "maintainer": "Maintainer",
+    "permissions": "Permissions and access",
+    "filesystemAccess": "Filesystem",
+    "networkAccess": "Network access",
+    "commandExecution": "Command execution",
+    "accountAccess": "Account access",
+    "secretsAccess": "Secret access",
+    "agentSupport": "Agent support",
+    "dependencies": "External dependencies",
+    "addDependency": "Add dependency",
+    "noDependencies": "No dependencies declared",
+    "dependencyName": "Dependency name",
+    "dependencyNameRequired": "Dependency name is required",
+    "versionRequirement": "Version requirement",
+    "checkCommand": "Check command, for example opencli --version",
+    "required": "Required",
+    "notes": "Maintenance notes",
+    "summary": "{{agents}} agents explicitly supported, {{dependencies}} dependencies declared",
+    "options": {
+      "kind": {
+        "capability": "Independent capability",
+        "tool_guide": "Tool guide",
+        "integration": "External integration",
+        "workflow": "Fixed workflow",
+        "governance": "Governance capability"
+      },
+      "provenance": {
+        "unknown": "Unconfirmed source",
+        "official": "Official",
+        "suite": "Suite-provided",
+        "third_party": "Third-party",
+        "local": "Locally maintained"
+      },
+      "lifecycle": {
+        "experimental": "Experimental",
+        "active": "Active",
+        "deprecated": "Deprecated",
+        "archived": "Archived"
+      },
+      "risk": {
+        "unreviewed": "Unreviewed",
+        "low": "Low risk",
+        "medium": "Medium risk",
+        "high": "High risk"
+      },
+      "access": {
+        "unknown": "Unconfirmed",
+        "none": "No access",
+        "read": "Read",
+        "write": "Write",
+        "required": "Required"
+      },
+      "support": {
+        "unknown": "Unspecified",
+        "supported": "Supported",
+        "partial": "Partial",
+        "unsupported": "Unsupported"
+      },
+      "dependency": {
+        "cli": "CLI",
+        "mcp": "MCP",
+        "runtime": "Runtime",
+        "service": "Service",
+        "skill": "Skill",
+        "config": "Configuration"
+      }
+    }
+  },
   "mySkills": {
     "title": "Library",
     "applyToDefault": "Apply Preset",

@@ -1,11 +1,14 @@
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::audit_log::{AuditDraft, AuditEntry, MAX_ENTRIES as AUDIT_MAX_ENTRIES};
 use super::crypto;
+use super::governance::{
+    AgentSupport, SkillDependency, SkillGovernanceInput, SkillGovernanceProfile, SkillPermissions,
+};
 
 /// Settings keys whose values are encrypted at rest with AES-256-GCM.
 const SENSITIVE_KEYS: &[&str] = &["proxy_url", "git_backup_remote_url"];
@@ -443,6 +446,213 @@ impl SkillStore {
     }
 
     // ── Targets ──
+
+    pub fn get_skill_governance(&self, skill_id: &str) -> Result<Option<SkillGovernanceProfile>> {
+        let conn = self.conn.lock().unwrap();
+        let skill_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM skills WHERE id = ?1)",
+            params![skill_id],
+            |row| row.get(0),
+        )?;
+        if !skill_exists {
+            return Ok(None);
+        }
+
+        let mut profile = conn
+            .query_row(
+                "SELECT kind, provenance, owner, maintainer, lifecycle, risk_level,
+                        filesystem_access, network_access, command_execution,
+                        account_access, secrets_access, notes, created_at, updated_at
+                 FROM skill_governance WHERE skill_id = ?1",
+                params![skill_id],
+                |row| {
+                    Ok(SkillGovernanceProfile {
+                        skill_id: skill_id.to_string(),
+                        kind: row.get(0)?,
+                        provenance: row.get(1)?,
+                        owner: row.get(2)?,
+                        maintainer: row.get(3)?,
+                        lifecycle: row.get(4)?,
+                        risk_level: row.get(5)?,
+                        permissions: SkillPermissions {
+                            filesystem_access: row.get(6)?,
+                            network_access: row.get(7)?,
+                            command_execution: row.get(8)?,
+                            account_access: row.get(9)?,
+                            secrets_access: row.get(10)?,
+                        },
+                        notes: row.get(11)?,
+                        created_at: row.get(12)?,
+                        updated_at: row.get(13)?,
+                        supported_agents: Vec::new(),
+                        dependencies: Vec::new(),
+                    })
+                },
+            )
+            .optional()?
+            .unwrap_or_else(|| SkillGovernanceProfile::default_for(skill_id));
+
+        {
+            let mut stmt = conn.prepare(
+                "SELECT agent_key, support_level, notes
+                 FROM skill_agent_support WHERE skill_id = ?1 ORDER BY agent_key",
+            )?;
+            profile.supported_agents = stmt
+                .query_map(params![skill_id], |row| {
+                    Ok(AgentSupport {
+                        agent_key: row.get(0)?,
+                        support_level: row.get(1)?,
+                        notes: row.get(2)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+
+        {
+            let mut stmt = conn.prepare(
+                "SELECT dependency_type, name, version_requirement, required, check_command
+                 FROM skill_dependencies
+                 WHERE skill_id = ?1 ORDER BY dependency_type, name",
+            )?;
+            profile.dependencies = stmt
+                .query_map(params![skill_id], |row| {
+                    Ok(SkillDependency {
+                        dependency_type: row.get(0)?,
+                        name: row.get(1)?,
+                        version_requirement: row.get(2)?,
+                        required: row.get::<_, i32>(3)? != 0,
+                        check_command: row.get(4)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+        }
+
+        Ok(Some(profile))
+    }
+
+    pub fn replace_skill_governance(
+        &self,
+        input: SkillGovernanceInput,
+    ) -> Result<SkillGovernanceProfile> {
+        let input = input.validate_and_normalize()?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs() as i64;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        let skill_exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM skills WHERE id = ?1)",
+            params![&input.skill_id],
+            |row| row.get(0),
+        )?;
+        if !skill_exists {
+            anyhow::bail!("Skill '{}' was not found", input.skill_id);
+        }
+
+        let created_at = tx
+            .query_row(
+                "SELECT created_at FROM skill_governance WHERE skill_id = ?1",
+                params![&input.skill_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(now);
+
+        tx.execute(
+            "INSERT INTO skill_governance (
+                skill_id, kind, provenance, owner, maintainer, lifecycle, risk_level,
+                filesystem_access, network_access, command_execution, account_access,
+                secrets_access, notes, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT(skill_id) DO UPDATE SET
+                kind = excluded.kind,
+                provenance = excluded.provenance,
+                owner = excluded.owner,
+                maintainer = excluded.maintainer,
+                lifecycle = excluded.lifecycle,
+                risk_level = excluded.risk_level,
+                filesystem_access = excluded.filesystem_access,
+                network_access = excluded.network_access,
+                command_execution = excluded.command_execution,
+                account_access = excluded.account_access,
+                secrets_access = excluded.secrets_access,
+                notes = excluded.notes,
+                updated_at = excluded.updated_at",
+            params![
+                &input.skill_id,
+                &input.kind,
+                &input.provenance,
+                &input.owner,
+                &input.maintainer,
+                &input.lifecycle,
+                &input.risk_level,
+                &input.permissions.filesystem_access,
+                &input.permissions.network_access,
+                &input.permissions.command_execution,
+                &input.permissions.account_access,
+                &input.permissions.secrets_access,
+                &input.notes,
+                created_at,
+                now,
+            ],
+        )?;
+
+        tx.execute(
+            "DELETE FROM skill_agent_support WHERE skill_id = ?1",
+            params![&input.skill_id],
+        )?;
+        for support in &input.supported_agents {
+            tx.execute(
+                "INSERT INTO skill_agent_support (skill_id, agent_key, support_level, notes)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    &input.skill_id,
+                    &support.agent_key,
+                    &support.support_level,
+                    &support.notes,
+                ],
+            )?;
+        }
+
+        tx.execute(
+            "DELETE FROM skill_dependencies WHERE skill_id = ?1",
+            params![&input.skill_id],
+        )?;
+        for dependency in &input.dependencies {
+            tx.execute(
+                "INSERT INTO skill_dependencies (
+                    skill_id, dependency_type, name, version_requirement, required, check_command
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    &input.skill_id,
+                    &dependency.dependency_type,
+                    &dependency.name,
+                    &dependency.version_requirement,
+                    dependency.required,
+                    &dependency.check_command,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+
+        Ok(SkillGovernanceProfile {
+            skill_id: input.skill_id,
+            kind: input.kind,
+            provenance: input.provenance,
+            owner: input.owner,
+            maintainer: input.maintainer,
+            lifecycle: input.lifecycle,
+            risk_level: input.risk_level,
+            supported_agents: input.supported_agents,
+            dependencies: input.dependencies,
+            permissions: input.permissions,
+            notes: input.notes,
+            created_at,
+            updated_at: now,
+        })
+    }
 
     pub fn insert_target(&self, target: &SkillTargetRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -1613,5 +1823,134 @@ mod tag_tests {
         let map = store.get_tags_map().unwrap();
         assert_eq!(map.get("a").unwrap(), &vec!["keep".to_string()]);
         assert!(map.get("b").is_none());
+    }
+}
+
+#[cfg(test)]
+mod governance_tests {
+    use super::*;
+    use crate::core::governance::{AgentSupport, SkillDependency};
+    use tempfile::tempdir;
+
+    fn skill(id: &str) -> SkillRecord {
+        SkillRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: None,
+            source_type: "import".to_string(),
+            source_ref: None,
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: format!("/tmp/{id}"),
+            content_hash: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            status: "ok".to_string(),
+            update_status: "local_only".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        }
+    }
+
+    fn input(skill_id: &str) -> SkillGovernanceInput {
+        SkillGovernanceInput {
+            skill_id: skill_id.to_string(),
+            kind: "integration".to_string(),
+            provenance: "local".to_string(),
+            owner: Some("Research group".to_string()),
+            maintainer: Some("animinzes".to_string()),
+            lifecycle: "active".to_string(),
+            risk_level: "medium".to_string(),
+            supported_agents: vec![AgentSupport {
+                agent_key: "codex".to_string(),
+                support_level: "supported".to_string(),
+                notes: None,
+            }],
+            dependencies: vec![SkillDependency {
+                dependency_type: "cli".to_string(),
+                name: "opencli".to_string(),
+                version_requirement: Some(">=1.0".to_string()),
+                required: true,
+                check_command: Some("opencli --version".to_string()),
+            }],
+            permissions: SkillPermissions {
+                filesystem_access: "read".to_string(),
+                network_access: "required".to_string(),
+                command_execution: "required".to_string(),
+                account_access: "none".to_string(),
+                secrets_access: "none".to_string(),
+            },
+            notes: Some("Used for external academic search".to_string()),
+        }
+    }
+
+    #[test]
+    fn missing_profile_returns_defaults() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        store.insert_skill(&skill("a")).unwrap();
+
+        let profile = store.get_skill_governance("a").unwrap().unwrap();
+        assert_eq!(profile.kind, "capability");
+        assert_eq!(profile.risk_level, "unreviewed");
+        assert_eq!(profile.created_at, 0);
+    }
+
+    #[test]
+    fn replaces_governance_profile_atomically() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        store.insert_skill(&skill("a")).unwrap();
+
+        let saved = store.replace_skill_governance(input("a")).unwrap();
+        assert_eq!(saved.supported_agents.len(), 1);
+        assert_eq!(saved.dependencies.len(), 1);
+
+        let mut replacement = input("a");
+        replacement.supported_agents.clear();
+        replacement.dependencies = vec![SkillDependency {
+            dependency_type: "mcp".to_string(),
+            name: "aminer".to_string(),
+            version_requirement: None,
+            required: false,
+            check_command: None,
+        }];
+        let replaced = store.replace_skill_governance(replacement).unwrap();
+        assert!(replaced.supported_agents.is_empty());
+        assert_eq!(replaced.dependencies[0].name, "aminer");
+
+        let loaded = store.get_skill_governance("a").unwrap().unwrap();
+        assert!(loaded.supported_agents.is_empty());
+        assert_eq!(loaded.dependencies, replaced.dependencies);
+        assert_eq!(loaded.created_at, saved.created_at);
+    }
+
+    #[test]
+    fn deleting_skill_cascades_governance_rows() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        store.insert_skill(&skill("a")).unwrap();
+        store.replace_skill_governance(input("a")).unwrap();
+        store.delete_skill("a").unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        for table in [
+            "skill_governance",
+            "skill_agent_support",
+            "skill_dependencies",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE skill_id = 'a'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "rows remained in {table}");
+        }
     }
 }

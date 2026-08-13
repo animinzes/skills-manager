@@ -26,6 +26,7 @@ import { DetailSheet } from "./DetailSheet";
 import { SkillMarkdown } from "./SkillMarkdown";
 import { AgentToggleSection, type AgentToggleItem } from "./AgentToggleSection";
 import { SkillProjectsSection } from "./SkillProjectsSection";
+import { SkillGovernanceSection } from "./SkillGovernanceSection";
 import { SyncDots } from "./SyncDots";
 
 interface Props {
@@ -311,6 +312,8 @@ function SkillDetailPanelContent({
       meta={meta}
       onClose={onClose}
     >
+      <SkillGovernanceSection skillId={skill.id} tools={tools ?? []} />
+
       {toolToggles && onToggleTool && (
         <AgentToggleSection
           items={toggleItems}

@@ -221,6 +221,85 @@
     "restoreSuccess": "備份已還原，技能已就緒。",
     "hint": "之後隨時可以在側邊欄的「備份」頁連線或還原備份。"
   },
+  "governance": {
+    "title": "技能治理",
+    "subtitle": "分類、責任、風險與依賴",
+    "loading": "正在讀取治理資料",
+    "edit": "編輯治理資料",
+    "saved": "治理資料已儲存",
+    "kind": "技能類型",
+    "provenance": "來源性質",
+    "lifecycle": "生命週期",
+    "risk": "風險等級",
+    "owner": "負責人或團隊",
+    "maintainer": "維護者",
+    "permissions": "權限與存取",
+    "filesystemAccess": "檔案系統",
+    "networkAccess": "網路存取",
+    "commandExecution": "指令執行",
+    "accountAccess": "帳號存取",
+    "secretsAccess": "密鑰存取",
+    "agentSupport": "Agent 支援",
+    "dependencies": "外部依賴",
+    "addDependency": "新增依賴",
+    "noDependencies": "尚未宣告依賴",
+    "dependencyName": "依賴名稱",
+    "dependencyNameRequired": "依賴名稱不能為空",
+    "versionRequirement": "版本條件",
+    "checkCommand": "檢查指令，例如 opencli --version",
+    "required": "必需",
+    "notes": "維護說明",
+    "summary": "明確支援 {{agents}} 個 Agent，宣告 {{dependencies}} 項依賴",
+    "options": {
+      "kind": {
+        "capability": "獨立能力",
+        "tool_guide": "工具說明",
+        "integration": "外部介面",
+        "workflow": "固定工作流程",
+        "governance": "治理能力"
+      },
+      "provenance": {
+        "unknown": "來源未確認",
+        "official": "官方",
+        "suite": "套件提供",
+        "third_party": "第三方",
+        "local": "本機自建"
+      },
+      "lifecycle": {
+        "experimental": "實驗中",
+        "active": "使用中",
+        "deprecated": "停止推薦",
+        "archived": "已封存"
+      },
+      "risk": {
+        "unreviewed": "未審查",
+        "low": "低風險",
+        "medium": "中風險",
+        "high": "高風險"
+      },
+      "access": {
+        "unknown": "未確認",
+        "none": "無需存取",
+        "read": "讀取",
+        "write": "寫入",
+        "required": "需要"
+      },
+      "support": {
+        "unknown": "未宣告",
+        "supported": "支援",
+        "partial": "部分支援",
+        "unsupported": "不支援"
+      },
+      "dependency": {
+        "cli": "CLI",
+        "mcp": "MCP",
+        "runtime": "執行環境",
+        "service": "服務",
+        "skill": "技能",
+        "config": "設定"
+      }
+    }
+  },
   "mySkills": {
     "title": "技能庫",
     "applyToDefault": "套用 Preset",

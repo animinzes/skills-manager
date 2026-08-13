@@ -41,6 +41,62 @@ export interface ManagedSkill {
   tags: string[];
 }
 
+export type SkillKind =
+  | "capability"
+  | "tool_guide"
+  | "integration"
+  | "workflow"
+  | "governance";
+export type SkillProvenance = "unknown" | "official" | "suite" | "third_party" | "local";
+export type SkillLifecycle = "experimental" | "active" | "deprecated" | "archived";
+export type SkillRiskLevel = "unreviewed" | "low" | "medium" | "high";
+export type AgentSupportLevel = "unknown" | "supported" | "partial" | "unsupported";
+export type SkillDependencyType = "cli" | "mcp" | "runtime" | "service" | "skill" | "config";
+export type FilesystemAccess = "unknown" | "none" | "read" | "write";
+export type BinaryAccess = "unknown" | "none" | "required";
+export type AccountAccess = "unknown" | "none" | "read" | "write";
+
+export interface AgentSupport {
+  agent_key: string;
+  support_level: AgentSupportLevel;
+  notes: string | null;
+}
+
+export interface SkillDependency {
+  dependency_type: SkillDependencyType;
+  name: string;
+  version_requirement: string | null;
+  required: boolean;
+  check_command: string | null;
+}
+
+export interface SkillPermissions {
+  filesystem_access: FilesystemAccess;
+  network_access: BinaryAccess;
+  command_execution: BinaryAccess;
+  account_access: AccountAccess;
+  secrets_access: BinaryAccess;
+}
+
+export interface SkillGovernanceInput {
+  skill_id: string;
+  kind: SkillKind;
+  provenance: SkillProvenance;
+  owner: string | null;
+  maintainer: string | null;
+  lifecycle: SkillLifecycle;
+  risk_level: SkillRiskLevel;
+  supported_agents: AgentSupport[];
+  dependencies: SkillDependency[];
+  permissions: SkillPermissions;
+  notes: string | null;
+}
+
+export interface SkillGovernanceProfile extends SkillGovernanceInput {
+  created_at: number;
+  updated_at: number;
+}
+
 export interface SkillTarget {
   id: string;
   skill_id: string;
@@ -351,6 +407,12 @@ export const getAllTags = () => invoke<string[]>("get_all_tags");
 
 export const setSkillTags = (skillId: string, tags: string[]) =>
   invoke<void>("set_skill_tags", { skillId, tags });
+
+export const getSkillGovernance = (skillId: string) =>
+  invoke<SkillGovernanceProfile>("get_skill_governance", { skillId });
+
+export const saveSkillGovernance = (input: SkillGovernanceInput) =>
+  invoke<SkillGovernanceProfile>("save_skill_governance", { input });
 
 export const renameTag = (oldName: string, newName: string) =>
   invoke<void>("rename_tag", { oldName, newName });
