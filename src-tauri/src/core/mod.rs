@@ -29,6 +29,7 @@ pub mod skill_store;
 pub mod skillssh_api;
 pub mod sync_engine;
 pub mod sync_metadata;
+pub mod suite;
 pub mod timing;
 pub mod tool_adapters;
 pub mod tool_service;

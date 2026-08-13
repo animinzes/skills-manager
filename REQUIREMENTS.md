@@ -63,8 +63,31 @@ Each skill can record:
 - filesystem, network, command, account, and secret access requirements
 - maintenance notes and review time
 
-Governance metadata is stored in SQLite and references the existing stable
+Governance metadata is stored in SQLite and in file-based registry metadata
+that can rebuild the SQLite projection. It references the existing stable
 `skill_id`. Skill content and upstream-compatible skill records remain intact.
+
+## Local storage model
+
+When the central repository is configured as `D:\SkillControl`, the managed
+data is organized as follows:
+
+```text
+D:\SkillControl\
+├── skills\                         skill directories
+│   └── .skills-manager\
+│       └── ...                      internal Git synchronization metadata
+├── registry\
+│   ├── skills\                      skill identity, tags, and governance
+│   ├── suites\                      whole-suite manifests
+│   └── tools\index.json             declared CLI, MCP, runtime, and services
+├── history\changes.jsonl           append-only modification history
+└── skills-manager.db               rebuildable local read model
+```
+
+The Registry page displays the registry and history paths. The history file is
+append-only and is never pruned or rewritten. SQLite keeps a capped copy for
+fast page loading.
 
 ## Health model
 
@@ -119,3 +142,21 @@ The governance foundation is complete when:
 6. deleting a skill deletes its governance, support, and dependency records;
 7. the frontend can read and save the profile from a skill detail view;
 8. Rust tests, frontend lint, and frontend build pass.
+
+## Registry and suite milestone acceptance
+
+1. the sidebar contains a Registry page;
+2. the page displays skills, suites, declared tools and services, and the
+   modification history;
+3. skills can be filtered and edited by primary classification and tags;
+4. a suite stores its version, category, lifecycle, tags, and ordered members;
+5. suite membership is replaced atomically as one complete definition;
+6. deploying a suite deploys every member to the selected Agent and rolls back
+   newly deployed members if a later member fails;
+7. disabling a suite removes every recorded member target for that Agent;
+8. governance and suite manifests restore correctly after rebuilding the
+   database;
+9. modification records include before and after data for classification,
+   tags, and suite definitions;
+10. development, build caches, and package outputs remain on the D drive, and
+    this personal build creates no pull request.

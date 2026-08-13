@@ -8,10 +8,16 @@ use unicode_normalization::UnicodeNormalization;
 use walkdir::WalkDir;
 
 use super::central_repo;
+use super::governance::SkillGovernanceInput;
 use super::repo_lock::RepoLock;
 use super::skill_metadata;
 use super::skill_store::{ScenarioRecord, SkillRecord, SkillStore};
+use super::suite::SuiteRecord;
 
+// Governance is an optional extension of the existing skill metadata record,
+// and suite manifests live in their own registry namespace. Keeping the
+// compatible schema version avoids rewriting every legacy skill on first
+// sync from two different devices.
 const SCHEMA_VERSION: u32 = 1;
 const APP_MIN_VERSION: &str = "2.0.0";
 
@@ -41,6 +47,8 @@ pub struct SkillMetaFile {
     pub enabled: bool,
     pub tags: Vec<String>,
     pub source: SourceMeta,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub governance: Option<SkillGovernanceInput>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -62,18 +70,47 @@ pub struct ScenarioSkillMetaFile {
     pub tools: BTreeMap<String, bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SuiteMetaFile {
+    pub schema_version: u32,
+    pub suite: SuiteRecord,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RegistryToolRecord {
+    pub resource_type: String,
+    pub name: String,
+    pub skill_ids: Vec<String>,
+    pub required_by: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryToolsFile {
+    pub schema_version: u32,
+    pub tools: Vec<RegistryToolRecord>,
+}
+
 pub fn metadata_dir() -> PathBuf {
     central_repo::skills_dir().join(".skills-manager")
+}
+
+/// User-visible, file-based registry. The hidden metadata directory remains
+/// the Git synchronization protocol; this directory is the readable local
+/// catalog and can rebuild the database when the internal projection is gone.
+pub fn registry_dir() -> PathBuf {
+    central_repo::base_dir().join("registry")
 }
 
 pub fn metadata_exists() -> bool {
     metadata_dir().join("schema.json").exists()
         || metadata_dir().join("skills").is_dir()
         || metadata_dir().join("scenarios").is_dir()
+        || registry_dir().join("skills").is_dir()
 }
 
 pub fn has_complete_skill_snapshot() -> bool {
-    metadata_dir().join("schema.json").is_file() && metadata_dir().join("skills").is_dir()
+    (metadata_dir().join("schema.json").is_file() && metadata_dir().join("skills").is_dir())
+        || registry_dir().join("skills").is_dir()
 }
 
 #[allow(dead_code)]
@@ -100,7 +137,9 @@ pub(crate) fn write_all_from_db_unlocked(store: &SkillStore) -> Result<()> {
     write_schema()?;
     write_skill_records_from_db(store)?;
     write_scenario_records_from_db(store)?;
+    write_suite_records_from_db(store)?;
     remove_stale_metadata_files(store)?;
+    write_registry_projection_from_db(store)?;
     Ok(())
 }
 
@@ -215,12 +254,53 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
         };
         store.upsert_skill(&record)?;
         store.set_tags_for_skill(&meta.skill_id, &meta.tags)?;
+        if let Some(governance) = meta.governance {
+            store.replace_skill_governance(governance)?;
+        }
     }
 
     if has_complete_scenario_snapshot {
         store.replace_scenarios_from_metadata(&scenarios)?;
         store.replace_scenario_memberships_from_metadata(&memberships)?;
     }
+    let suite_snapshot_dir = if metadata_dir().join("registry").join("suites").is_dir() {
+        metadata_dir().join("registry").join("suites")
+    } else {
+        registry_dir().join("suites")
+    };
+    if suite_snapshot_dir.is_dir() {
+        let suite_files: Vec<SuiteMetaFile> =
+            read_json_files(suite_snapshot_dir)?;
+        let incoming_ids = suite_files
+            .iter()
+            .map(|file| file.suite.id.clone())
+            .collect::<HashSet<_>>();
+        for existing in store.get_all_suites()? {
+            if !incoming_ids.contains(&existing.id) {
+                store.delete_suite(&existing.id)?;
+            }
+        }
+        for file in suite_files {
+            store.replace_suite(super::suite::SuiteInput {
+                id: Some(file.suite.id),
+                name: file.suite.name,
+                description: file.suite.description,
+                version: file.suite.version,
+                category: file.suite.category,
+                lifecycle: file.suite.lifecycle,
+                tags: file.suite.tags,
+                members: file.suite.members,
+            })?;
+        }
+    }
+    // Refresh both the internal synchronization metadata and the visible
+    // registry after a restore, so the next run has two consistent projections.
+    ensure_metadata_dirs()?;
+    write_schema()?;
+    write_skill_records_from_db(store)?;
+    write_suite_records_from_db(store)?;
+    remove_stale_metadata_files(store)?;
+    write_registry_projection_from_db(store)?;
     Ok(())
 }
 
@@ -238,7 +318,13 @@ pub(crate) fn ensure_skill_metadata_unlocked(store: &SkillStore, skill_id: &str)
         .get_skill_by_id(skill_id)?
         .ok_or_else(|| anyhow!("skill not found: {skill_id}"))?;
     let tags = store.get_tags_map()?.remove(skill_id).unwrap_or_default();
-    write_skill_file(&skill, &tags)
+    let governance = store
+        .has_explicit_skill_governance(skill_id)?
+        .then(|| store.get_skill_governance(skill_id))
+        .transpose()?
+        .flatten()
+        .map(SkillGovernanceInput::from);
+    write_skill_file(&skill, &tags, governance)
 }
 
 pub fn cleanup_temporary_files() -> Result<()> {
@@ -270,6 +356,10 @@ fn ensure_metadata_dirs() -> Result<()> {
     fs::create_dir_all(metadata_dir().join("skills"))?;
     fs::create_dir_all(metadata_dir().join("scenarios"))?;
     fs::create_dir_all(metadata_dir().join("scenario-skills"))?;
+    fs::create_dir_all(metadata_dir().join("registry").join("suites"))?;
+    fs::create_dir_all(registry_dir().join("skills"))?;
+    fs::create_dir_all(registry_dir().join("suites"))?;
+    fs::create_dir_all(registry_dir().join("tools"))?;
     Ok(())
 }
 
@@ -282,7 +372,17 @@ fn metadata_has_complete_scenario_snapshot() -> bool {
 fn write_skill_records_from_db(store: &SkillStore) -> Result<()> {
     let mut tags = store.get_tags_map()?;
     for skill in store.get_all_skills()? {
-        write_skill_file(&skill, &tags.remove(&skill.id).unwrap_or_default())?;
+        let governance = store
+            .has_explicit_skill_governance(&skill.id)?
+            .then(|| store.get_skill_governance(&skill.id))
+            .transpose()?
+            .flatten()
+            .map(SkillGovernanceInput::from);
+        write_skill_file(
+            &skill,
+            &tags.remove(&skill.id).unwrap_or_default(),
+            governance,
+        )?;
     }
     Ok(())
 }
@@ -310,6 +410,104 @@ fn write_scenario_records_from_db(store: &SkillStore) -> Result<()> {
     Ok(())
 }
 
+fn write_suite_records_from_db(store: &SkillStore) -> Result<()> {
+    for suite in store.get_all_suites()? {
+        atomic_write_json(
+            &metadata_dir()
+                .join("registry")
+                .join("suites")
+                .join(format!("{}.json", suite.id)),
+            &SuiteMetaFile {
+                schema_version: SCHEMA_VERSION,
+                suite,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn write_registry_projection_from_db(store: &SkillStore) -> Result<()> {
+    for directory in ["skills", "suites", "tools"] {
+        fs::create_dir_all(registry_dir().join(directory))?;
+    }
+
+    copy_json_projection(
+        &metadata_dir().join("skills"),
+        &registry_dir().join("skills"),
+    )?;
+    copy_json_projection(
+        &metadata_dir().join("registry").join("suites"),
+        &registry_dir().join("suites"),
+    )?;
+
+    let mut resources: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    for skill in store.get_all_skills()? {
+        let Some(governance) = store.get_skill_governance(&skill.id)? else {
+            continue;
+        };
+        for dependency in governance.dependencies {
+            resources
+                .entry((dependency.dependency_type, dependency.name))
+                .or_default()
+                .insert(skill.id.clone());
+        }
+    }
+    let tools = resources
+        .into_iter()
+        .map(|((resource_type, name), skill_ids)| {
+            let skill_ids = skill_ids.into_iter().collect::<Vec<_>>();
+            RegistryToolRecord {
+                resource_type,
+                name,
+                required_by: skill_ids.len(),
+                skill_ids,
+            }
+        })
+        .collect();
+    atomic_write_json(
+        &registry_dir().join("tools").join("index.json"),
+        &RegistryToolsFile {
+            schema_version: SCHEMA_VERSION,
+            tools,
+        },
+    )?;
+    Ok(())
+}
+
+fn copy_json_projection(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)?;
+    let mut expected = HashSet::new();
+    if source.is_dir() {
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_file()
+                || path.extension().map_or(true, |extension| extension != "json")
+            {
+                continue;
+            }
+            let file_name = entry.file_name();
+            expected.insert(file_name.to_string_lossy().to_string());
+            let target = destination.join(&file_name);
+            let temporary = target.with_extension(format!("json.tmp.{}", uuid::Uuid::now_v7()));
+            fs::copy(&path, &temporary)?;
+            fs::rename(&temporary, &target)?;
+            sync_parent_dir(&target)?;
+        }
+    }
+    for entry in fs::read_dir(destination)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_file()
+            && path.extension().is_some_and(|extension| extension == "json")
+            && !expected.contains(&entry.file_name().to_string_lossy().to_string())
+        {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
 fn remove_stale_metadata_files(store: &SkillStore) -> Result<()> {
     let skill_ids: HashSet<String> = store
         .get_all_skills()?
@@ -324,6 +522,16 @@ fn remove_stale_metadata_files(store: &SkillStore) -> Result<()> {
         .map(|scenario| scenario.id)
         .collect();
     remove_stale_json_files(&metadata_dir().join("scenarios"), &scenario_ids)?;
+
+    let suite_ids = store
+        .get_all_suites()?
+        .into_iter()
+        .map(|suite| suite.id)
+        .collect::<HashSet<_>>();
+    remove_stale_json_files(
+        &metadata_dir().join("registry").join("suites"),
+        &suite_ids,
+    )?;
 
     let membership_root = metadata_dir().join("scenario-skills");
     if membership_root.exists() {
@@ -396,7 +604,11 @@ fn remove_stale_json_files(dir: &Path, expected_stems: &HashSet<String>) -> Resu
     Ok(())
 }
 
-fn write_skill_file(skill: &SkillRecord, tags: &[String]) -> Result<()> {
+fn write_skill_file(
+    skill: &SkillRecord,
+    tags: &[String],
+    governance: Option<SkillGovernanceInput>,
+) -> Result<()> {
     let path = relative_skill_path(&skill.central_path)?;
     let tags = sorted_tags(tags);
     let source_ref = match skill.source_type.as_str() {
@@ -416,9 +628,16 @@ fn write_skill_file(skill: &SkillRecord, tags: &[String]) -> Result<()> {
             subpath: skill.source_subpath.clone(),
             branch: skill.source_branch.clone(),
         },
+        governance,
     };
     atomic_write_json(
         &metadata_dir()
+            .join("skills")
+            .join(format!("{}.json", skill.id)),
+        &meta,
+    )?;
+    atomic_write_json(
+        &registry_dir()
             .join("skills")
             .join(format!("{}.json", skill.id)),
         &meta,
@@ -453,7 +672,12 @@ fn write_membership_file(member: &ScenarioSkillMetaFile) -> Result<()> {
 }
 
 fn read_skill_files() -> Result<Vec<SkillMetaFile>> {
-    read_json_files(metadata_dir().join("skills"))
+    let internal = metadata_dir().join("skills");
+    if metadata_dir().join("schema.json").is_file() && internal.is_dir() {
+        read_json_files(internal)
+    } else {
+        read_json_files(registry_dir().join("skills"))
+    }
 }
 
 fn central_repo_has_valid_skill_dirs() -> Result<bool> {
@@ -649,7 +873,12 @@ fn sync_parent_dir(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{central_repo, skill_store::SkillStore};
+    use crate::core::{
+        central_repo,
+        governance::{SkillDependency, SkillGovernanceInput, SkillPermissions},
+        skill_store::SkillStore,
+        suite::{SuiteInput, SuiteMember},
+    };
     use std::sync::MutexGuard;
     use tempfile::{TempDir, tempdir};
 
@@ -773,6 +1002,110 @@ mod tests {
                 .unwrap(),
             vec!["tag-a".to_string(), "tag-b".to_string()]
         );
+    }
+
+    #[test]
+    fn metadata_reindex_restores_governance_and_whole_suite() {
+        let source = test_repo();
+        let skill_dir = write_skill_dir("research-search");
+        source
+            .store
+            .insert_skill(&sample_skill("skill-1", &skill_dir))
+            .unwrap();
+        source
+            .store
+            .replace_skill_governance(SkillGovernanceInput {
+                skill_id: "skill-1".into(),
+                kind: "integration".into(),
+                provenance: "suite".into(),
+                owner: Some("local-user".into()),
+                maintainer: None,
+                lifecycle: "active".into(),
+                risk_level: "low".into(),
+                supported_agents: Vec::new(),
+                dependencies: vec![SkillDependency {
+                    dependency_type: "service".into(),
+                    name: "AMiner".into(),
+                    version_requirement: None,
+                    required: true,
+                    check_command: None,
+                }],
+                permissions: SkillPermissions::default(),
+                notes: None,
+            })
+            .unwrap();
+        let suite = source
+            .store
+            .replace_suite(SuiteInput {
+                id: Some("research-suite".into()),
+                name: "Research Suite".into(),
+                description: Some("Managed as one unit".into()),
+                version: Some("1.0.0".into()),
+                category: "research".into(),
+                lifecycle: "active".into(),
+                tags: vec!["academic".into(), "search".into()],
+                members: vec![SuiteMember {
+                    skill_id: "skill-1".into(),
+                    required: true,
+                    role: Some("search".into()),
+                    version_requirement: Some(">=1.0".into()),
+                    sort_order: 0,
+                }],
+            })
+            .unwrap();
+
+        write_all_from_db_unlocked(&source.store).unwrap();
+
+        let skill_meta_path = metadata_dir().join("skills").join("skill-1.json");
+        let skill_meta: SkillMetaFile =
+            serde_json::from_str(&fs::read_to_string(skill_meta_path).unwrap()).unwrap();
+        assert_eq!(skill_meta.governance.unwrap().kind, "integration");
+
+        let suite_meta_path = metadata_dir()
+            .join("registry")
+            .join("suites")
+            .join("research-suite.json");
+        let suite_meta: SuiteMetaFile =
+            serde_json::from_str(&fs::read_to_string(suite_meta_path).unwrap()).unwrap();
+        assert_eq!(suite_meta.suite, suite);
+
+        assert!(registry_dir().join("skills").join("skill-1.json").is_file());
+        assert!(
+            registry_dir()
+                .join("suites")
+                .join("research-suite.json")
+                .is_file()
+        );
+        let tools: RegistryToolsFile = serde_json::from_str(
+            &fs::read_to_string(registry_dir().join("tools").join("index.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(tools.tools.len(), 1);
+        assert_eq!(tools.tools[0].name, "AMiner");
+
+        // Prove that the visible root registry is independently sufficient
+        // when the hidden Git metadata projection is unavailable.
+        fs::remove_dir_all(metadata_dir()).unwrap();
+
+        let restored_store =
+            SkillStore::new(&central_repo::base_dir().join("restored.db")).unwrap();
+        reindex_from_metadata_unlocked(&restored_store).unwrap();
+
+        let restored_governance = restored_store
+            .get_skill_governance("skill-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored_governance.kind, "integration");
+        assert_eq!(restored_governance.provenance, "suite");
+
+        let restored_suite = restored_store
+            .get_suite("research-suite")
+            .unwrap()
+            .unwrap();
+        assert_eq!(restored_suite.name, "Research Suite");
+        assert_eq!(restored_suite.tags, vec!["academic", "search"]);
+        assert_eq!(restored_suite.members.len(), 1);
+        assert_eq!(restored_suite.members[0].skill_id, "skill-1");
     }
 
     #[test]

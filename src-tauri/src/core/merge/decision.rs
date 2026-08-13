@@ -270,7 +270,7 @@ fn merge_components(b: &SkillObj, o: &SkillObj, t: &SkillObj) -> ComponentOutcom
 
     let content = pick(&b.content, &o.content, &t.content);
     let path = pick(&b.meta.path, &o.meta.path, &t.meta.path);
-    // attrs are one component: enabled + tags + source move together.
+    // attrs are one component: enabled + tags + source + governance move together.
     let attrs_changed_o = !attrs_eq(&b.meta, &o.meta);
     let attrs_changed_t = !attrs_eq(&b.meta, &t.meta);
     let attrs: Option<(&SkillMetaFile, bool)> = match (attrs_changed_o, attrs_changed_t) {
@@ -297,6 +297,7 @@ fn merge_components(b: &SkillObj, o: &SkillObj, t: &SkillObj) -> ComponentOutcom
                 enabled: attrs_src.enabled,
                 tags: attrs_src.tags.clone(),
                 source: attrs_src.source.clone(),
+                governance: attrs_src.governance.clone(),
             };
             let from_theirs = c_t || p_t || a_t;
             ComponentOutcome::Merged {
@@ -511,6 +512,7 @@ mod tests {
                     subpath: None,
                     branch: None,
                 },
+                governance: None,
             },
             content: Some(oid(content)),
         }

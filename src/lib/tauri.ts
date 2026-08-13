@@ -97,6 +97,77 @@ export interface SkillGovernanceProfile extends SkillGovernanceInput {
   updated_at: number;
 }
 
+export interface SuiteMember {
+  skill_id: string;
+  required: boolean;
+  role: string | null;
+  version_requirement: string | null;
+  sort_order: number;
+}
+
+export interface SuiteInput {
+  id: string | null;
+  name: string;
+  description: string | null;
+  version: string | null;
+  category: string;
+  lifecycle: SkillLifecycle;
+  tags: string[];
+  members: SuiteMember[];
+}
+
+export interface SuiteRecord extends Omit<SuiteInput, "id"> {
+  id: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface RegistrySkillRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  source_type: string;
+  source_ref: string | null;
+  central_path: string;
+  enabled: boolean;
+  status: string;
+}
+
+export interface RegistrySkill {
+  skill: RegistrySkillRecord;
+  governance: SkillGovernanceProfile;
+  tags: string[];
+  targets: SkillTarget[];
+  suite_ids: string[];
+}
+
+export interface RegistryResource {
+  resource_type: SkillDependencyType;
+  name: string;
+  skill_ids: string[];
+  required_by: number;
+}
+
+export interface ModificationEntry {
+  id: number;
+  ts: number;
+  action: string;
+  skill_id: string | null;
+  skill_name: string | null;
+  tool: string | null;
+  success: boolean;
+  detail: string | null;
+}
+
+export interface RegistrySnapshot {
+  skills: RegistrySkill[];
+  suites: SuiteRecord[];
+  resources: RegistryResource[];
+  history: ModificationEntry[];
+  registry_path: string;
+  history_path: string;
+}
+
 export interface SkillTarget {
   id: string;
   skill_id: string;
@@ -413,6 +484,17 @@ export const getSkillGovernance = (skillId: string) =>
 
 export const saveSkillGovernance = (input: SkillGovernanceInput) =>
   invoke<SkillGovernanceProfile>("save_skill_governance", { input });
+
+export const getRegistry = () => invoke<RegistrySnapshot>("get_registry");
+
+export const saveSuite = (input: SuiteInput) =>
+  invoke<SuiteRecord>("save_suite", { input });
+
+export const deleteSuite = (suiteId: string) =>
+  invoke<void>("delete_suite", { suiteId });
+
+export const setSuiteDeployed = (suiteId: string, tool: string, enabled: boolean) =>
+  invoke<void>("set_suite_deployed", { suiteId, tool, enabled });
 
 export const renameTag = (oldName: string, newName: string) =>
   invoke<void>("rename_tag", { oldName, newName });

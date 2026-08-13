@@ -7,6 +7,7 @@ use crate::core::{
     error::AppError,
     governance::{SkillGovernanceInput, SkillGovernanceProfile},
     skill_store::SkillStore,
+    sync_metadata,
 };
 
 #[tauri::command]
@@ -40,12 +41,21 @@ pub async fn save_skill_governance(
             .ok_or_else(|| {
                 AppError::not_found(format!("Skill '{}' was not found", input.skill_id))
             })?;
-        let profile = store
-            .replace_skill_governance(input)
+        let before = store
+            .get_skill_governance(&input.skill_id)
             .map_err(AppError::db)?;
+        let profile = sync_metadata::with_repo_lock("update skill governance", || {
+            let profile = store.replace_skill_governance(input)?;
+            sync_metadata::write_all_from_db_unlocked(&store)?;
+            Ok(profile)
+        })
+        .map_err(AppError::db)?;
         store.log_audit(
             AuditDraft::new("update_governance")
                 .skill(&skill.id, &skill.name)
+                .detail(
+                    serde_json::json!({ "before": before, "after": &profile }).to_string(),
+                )
                 .ok(),
         );
         Ok(profile)

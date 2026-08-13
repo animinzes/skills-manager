@@ -1014,6 +1014,10 @@ pub fn run() {
             commands::skills::delete_tag,
             commands::governance::get_skill_governance,
             commands::governance::save_skill_governance,
+            commands::registry::get_registry,
+            commands::registry::save_suite,
+            commands::registry::delete_suite,
+            commands::registry::set_suite_deployed,
             commands::skills::cancel_install,
             commands::skills::batch_import_folder,
             // Sync

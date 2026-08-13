@@ -567,6 +567,7 @@ mod tests {
                     subpath: None,
                     branch: None,
                 },
+                governance: None,
             };
             std::fs::write(
                 meta_dir.join("skill-1.json"),

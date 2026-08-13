@@ -9,6 +9,7 @@ use super::crypto;
 use super::governance::{
     AgentSupport, SkillDependency, SkillGovernanceInput, SkillGovernanceProfile, SkillPermissions,
 };
+use super::suite::{SuiteInput, SuiteRecord};
 
 /// Settings keys whose values are encrypted at rest with AES-256-GCM.
 const SENSITIVE_KEYS: &[&str] = &["proxy_url", "git_backup_remote_url"];
@@ -528,6 +529,19 @@ impl SkillStore {
         }
 
         Ok(Some(profile))
+    }
+
+    /// Whether the user or imported registry has persisted a governance
+    /// profile. The public getter still returns a useful default for every
+    /// skill, but metadata writes use this distinction to avoid rewriting
+    /// legacy skill records before the user edits them.
+    pub fn has_explicit_skill_governance(&self, skill_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM skill_governance WHERE skill_id = ?1)",
+            params![skill_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn replace_skill_governance(
@@ -1519,9 +1533,147 @@ impl SkillStore {
 
     // ── Audit log ──
 
-    /// Append an audit entry. Best-effort: errors are swallowed so callers
-    /// never have to wrap or propagate them. Auto-prunes when the table
-    /// grows beyond AUDIT_MAX_ENTRIES.
+    pub fn get_all_suites(&self) -> Result<Vec<SuiteRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, version, category, lifecycle, created_at, updated_at
+             FROM suites ORDER BY lower(name), id",
+        )?;
+        let shells = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let mut suites = Vec::with_capacity(shells.len());
+        for (id, name, description, version, category, lifecycle, created_at, updated_at) in shells {
+            suites.push(SuiteRecord {
+                tags: query_suite_tags(&conn, &id)?,
+                members: query_suite_members(&conn, &id)?,
+                id,
+                name,
+                description,
+                version,
+                category,
+                lifecycle,
+                created_at,
+                updated_at,
+            });
+        }
+        Ok(suites)
+    }
+
+    pub fn get_suite(&self, suite_id: &str) -> Result<Option<SuiteRecord>> {
+        Ok(self
+            .get_all_suites()?
+            .into_iter()
+            .find(|suite| suite.id == suite_id))
+    }
+
+    pub fn replace_suite(&self, input: SuiteInput) -> Result<SuiteRecord> {
+        let input = input.validate_and_normalize()?;
+        let id = input.id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+
+        for member in &input.members {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM skills WHERE id = ?1)",
+                params![&member.skill_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                anyhow::bail!("suite member skill not found: {}", member.skill_id);
+            }
+        }
+
+        let created_at = tx
+            .query_row(
+                "SELECT created_at FROM suites WHERE id = ?1",
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(now);
+        tx.execute(
+            "INSERT INTO suites (id, name, description, version, category, lifecycle, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                description = excluded.description,
+                version = excluded.version,
+                category = excluded.category,
+                lifecycle = excluded.lifecycle,
+                updated_at = excluded.updated_at",
+            params![
+                &id,
+                &input.name,
+                &input.description,
+                &input.version,
+                &input.category,
+                &input.lifecycle,
+                created_at,
+                now,
+            ],
+        )?;
+
+        tx.execute("DELETE FROM suite_tags WHERE suite_id = ?1", params![&id])?;
+        for tag in &input.tags {
+            tx.execute(
+                "INSERT INTO suite_tags (suite_id, tag) VALUES (?1, ?2)",
+                params![&id, tag],
+            )?;
+        }
+        tx.execute("DELETE FROM suite_members WHERE suite_id = ?1", params![&id])?;
+        for member in &input.members {
+            tx.execute(
+                "INSERT INTO suite_members
+                    (suite_id, skill_id, required, role, version_requirement, sort_order)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    &id,
+                    &member.skill_id,
+                    member.required,
+                    &member.role,
+                    &member.version_requirement,
+                    member.sort_order,
+                ],
+            )?;
+        }
+        tx.commit()?;
+
+        Ok(SuiteRecord {
+            id,
+            name: input.name,
+            description: input.description,
+            version: input.version,
+            category: input.category,
+            lifecycle: input.lifecycle,
+            tags: input.tags,
+            members: input.members,
+            created_at,
+            updated_at: now,
+        })
+    }
+
+    pub fn delete_suite(&self, suite_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute("DELETE FROM suites WHERE id = ?1", params![suite_id])? > 0)
+    }
+
+    /// Append an audit entry to the permanent JSONL history and the SQLite
+    /// read cache. Best-effort: errors are swallowed so callers never have to
+    /// wrap or propagate them. Only the SQLite cache is pruned.
     pub fn log_audit(&self, draft: AuditDraft) {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1537,16 +1689,31 @@ impl SkillStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 ts,
-                draft.action,
-                draft.skill_id,
-                draft.skill_name,
-                draft.tool,
+                &draft.action,
+                &draft.skill_id,
+                &draft.skill_name,
+                &draft.tool,
                 draft.success as i32,
-                draft.detail,
+                &draft.detail,
             ],
         );
         if insert.is_err() {
             return;
+        }
+        #[cfg(not(test))]
+        let entry = AuditEntry {
+            id: conn.last_insert_rowid(),
+            ts,
+            action: draft.action,
+            skill_id: draft.skill_id,
+            skill_name: draft.skill_name,
+            tool: draft.tool,
+            success: draft.success,
+            detail: draft.detail,
+        };
+        #[cfg(not(test))]
+        if let Err(error) = super::audit_log::append_persistent(&entry) {
+            log::warn!("failed to append persistent modification history: {error:#}");
         }
         // Prune to MAX_ENTRIES newest. Cheap when under the cap (DELETE matches 0 rows).
         let _ = conn.execute(
@@ -1715,6 +1882,35 @@ mod scenario_membership_tests {
             .unwrap()
             .is_empty());
     }
+}
+
+fn query_suite_tags(conn: &Connection, suite_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT tag FROM suite_tags WHERE suite_id = ?1 ORDER BY lower(tag), tag",
+    )?;
+    let tags = stmt
+        .query_map(params![suite_id], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(tags)
+}
+
+fn query_suite_members(conn: &Connection, suite_id: &str) -> Result<Vec<super::suite::SuiteMember>> {
+    let mut stmt = conn.prepare(
+        "SELECT skill_id, required, role, version_requirement, sort_order
+         FROM suite_members WHERE suite_id = ?1 ORDER BY sort_order, skill_id",
+    )?;
+    let members = stmt
+        .query_map(params![suite_id], |row| {
+            Ok(super::suite::SuiteMember {
+                skill_id: row.get(0)?,
+                required: row.get::<_, i32>(1)? != 0,
+                role: row.get(2)?,
+                version_requirement: row.get(3)?,
+                sort_order: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(members)
 }
 
 fn map_skill_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SkillRecord> {
@@ -1898,6 +2094,7 @@ mod governance_tests {
         assert_eq!(profile.kind, "capability");
         assert_eq!(profile.risk_level, "unreviewed");
         assert_eq!(profile.created_at, 0);
+        assert!(!store.has_explicit_skill_governance("a").unwrap());
     }
 
     #[test]
@@ -1907,6 +2104,7 @@ mod governance_tests {
         store.insert_skill(&skill("a")).unwrap();
 
         let saved = store.replace_skill_governance(input("a")).unwrap();
+        assert!(store.has_explicit_skill_governance("a").unwrap());
         assert_eq!(saved.supported_agents.len(), 1);
         assert_eq!(saved.dependencies.len(), 1);
 
@@ -1952,5 +2150,87 @@ mod governance_tests {
                 .unwrap();
             assert_eq!(count, 0, "rows remained in {table}");
         }
+    }
+}
+
+#[cfg(test)]
+mod suite_tests {
+    use super::*;
+    use crate::core::suite::{SuiteInput, SuiteMember};
+    use tempfile::tempdir;
+
+    fn skill(id: &str) -> SkillRecord {
+        SkillRecord {
+            id: id.into(),
+            name: id.into(),
+            description: None,
+            source_type: "local".into(),
+            source_ref: None,
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: format!("/tmp/{id}"),
+            content_hash: None,
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            status: "ok".into(),
+            update_status: "local_only".into(),
+            last_checked_at: None,
+            last_check_error: None,
+        }
+    }
+
+    #[test]
+    fn suite_replacement_is_whole_and_cascades() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        store.insert_skill(&skill("a")).unwrap();
+        store.insert_skill(&skill("b")).unwrap();
+        let saved = store
+            .replace_suite(SuiteInput {
+                id: None,
+                name: "Scholar".into(),
+                description: None,
+                version: Some("1.0".into()),
+                category: "research".into(),
+                lifecycle: "active".into(),
+                tags: vec!["academic".into()],
+                members: vec![SuiteMember {
+                    skill_id: "a".into(),
+                    required: true,
+                    role: None,
+                    version_requirement: None,
+                    sort_order: 0,
+                }],
+            })
+            .unwrap();
+
+        let replaced = store
+            .replace_suite(SuiteInput {
+                id: Some(saved.id.clone()),
+                name: "Scholar".into(),
+                description: None,
+                version: Some("2.0".into()),
+                category: "research".into(),
+                lifecycle: "active".into(),
+                tags: vec!["suite".into()],
+                members: vec![SuiteMember {
+                    skill_id: "b".into(),
+                    required: false,
+                    role: None,
+                    version_requirement: None,
+                    sort_order: 0,
+                }],
+            })
+            .unwrap();
+        assert_eq!(replaced.members.len(), 1);
+        assert_eq!(replaced.members[0].skill_id, "b");
+        assert_eq!(store.get_all_suites().unwrap()[0].tags, vec!["suite"]);
+
+        store.delete_suite(&saved.id).unwrap();
+        assert!(store.get_all_suites().unwrap().is_empty());
     }
 }

@@ -13,11 +13,14 @@ Deliverable: every skill has an editable governance profile.
 
 ## Phase 2: suites
 
-- add suite, suite member, and suite dependency tables
-- distinguish required and optional members
-- record version constraints, installer ownership, and upgrade policy
-- add suite completeness and compatibility validation
-- add suite list, detail, import, and export views
+- [x] add suite, suite member, and suite tag tables
+- [x] distinguish required and optional members in the data model
+- [x] store member version constraints
+- [x] add a Registry page with suite create/edit and whole-suite deployment
+- [x] persist complete suite manifests and restore them during database rebuild
+- [ ] add suite-level dependencies, installer ownership, and upgrade policy
+- [ ] add suite completeness and compatibility validation
+- [ ] add suite import and export
 
 Deliverable: Claude Scholar, OMX, OpenCLI, and AMiner families can be modeled as
 versioned suites.
@@ -38,7 +41,8 @@ suites with evidence.
 - model planned actions and preconditions
 - preview batch deployment, upgrade, repair, and removal
 - add explicit confirmation boundaries
-- journal action-level results
+- [x] add append-only modification history for current audited operations
+- [ ] journal every action-level result through one shared mutation service
 - attach recovery data and reuse existing Git backup safeguards
 
 Deliverable: batch changes can be reviewed before execution and audited after

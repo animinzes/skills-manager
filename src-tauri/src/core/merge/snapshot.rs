@@ -37,7 +37,10 @@ pub struct SkillObj {
 /// Component-level equality (§2): `content` / `path` / `attrs` are compared
 /// independently.
 pub fn attrs_eq(a: &SkillMetaFile, b: &SkillMetaFile) -> bool {
-    a.enabled == b.enabled && a.tags == b.tags && a.source == b.source
+    a.enabled == b.enabled
+        && a.tags == b.tags
+        && a.source == b.source
+        && a.governance == b.governance
 }
 
 pub fn skill_identical(a: &SkillObj, b: &SkillObj) -> bool {
@@ -174,6 +177,15 @@ pub fn read_snapshot(repo: &Repository, tree: &Tree) -> Result<Snapshot> {
                         parsed,
                     ));
                 }
+                ("registry", Some(ObjectType::Tree)) => {
+                    let registry_tree = repo.find_tree(entry.id())?;
+                    record_residual_tree(
+                        repo,
+                        &mut snap,
+                        format!("{METADATA_DIR}/registry"),
+                        &registry_tree,
+                    )?;
+                }
                 _ => {
                     record_residual(&mut snap, format!("{METADATA_DIR}/{name}"), &entry);
                 }
@@ -197,9 +209,29 @@ fn record_residual(snap: &mut Snapshot, path: String, entry: &git2::TreeEntry) {
         snap.residual
             .insert(path, FileEntry { oid: entry.id(), mode: entry.filemode() });
     }
-    // Unknown subtrees under .skills-manager are intentionally not descended:
-    // nothing writes them today, and treating them as opaque would need
-    // whole-tree semantics we don't have. The validator does not reject them.
+    // Unknown subtrees under .skills-manager remain opaque. The first-class
+    // registry subtree is descended separately so each suite manifest can be
+    // merged as one complete file.
+}
+
+fn record_residual_tree(
+    repo: &Repository,
+    snap: &mut Snapshot,
+    prefix: String,
+    tree: &Tree,
+) -> Result<()> {
+    for entry in tree.iter() {
+        let path = format!("{prefix}/{}", entry.name().unwrap_or_default());
+        match entry.kind() {
+            Some(ObjectType::Blob) => record_residual(snap, path, &entry),
+            Some(ObjectType::Tree) => {
+                let child = repo.find_tree(entry.id())?;
+                record_residual_tree(repo, snap, path, &child)?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn collect_residual(
@@ -244,4 +276,39 @@ pub fn tree_is_valid_skill_dir(tree: &Tree) -> bool {
             .map(|e| e.kind() == Some(ObjectType::Blob))
             .unwrap_or(false)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use git2::IndexAddOption;
+
+    #[test]
+    fn registry_suite_manifest_is_preserved_as_one_residual_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let suite_dir = root.join(".skills-manager/registry/suites");
+        std::fs::create_dir_all(&suite_dir).unwrap();
+        std::fs::write(
+            suite_dir.join("research.json"),
+            r#"{"schema_version":1,"suite":{"id":"research"}}"#,
+        )
+        .unwrap();
+
+        let repo = Repository::init(root).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_all(["*"], IndexAddOption::DEFAULT, None)
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+
+        let snapshot = read_snapshot(&repo, &tree).unwrap();
+        assert!(
+            snapshot
+                .residual
+                .contains_key(".skills-manager/registry/suites/research.json")
+        );
+    }
 }

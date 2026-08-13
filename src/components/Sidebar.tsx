@@ -14,6 +14,7 @@ import {
   FolderOpen,
   GripVertical,
   Link2,
+  Database,
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
@@ -167,6 +168,7 @@ export function Sidebar() {
   const NAV_ITEMS = [
     { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
     { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
+    { name: t("registry.title"), path: "/registry", icon: Database },
     { name: t("sidebar.installSkills"), path: "/install", icon: Download },
     { name: t("sidebar.backup"), path: "/backup", icon: CloudUpload },
   ];

@@ -106,6 +106,24 @@ impl SkillGovernanceProfile {
     }
 }
 
+impl From<SkillGovernanceProfile> for SkillGovernanceInput {
+    fn from(profile: SkillGovernanceProfile) -> Self {
+        Self {
+            skill_id: profile.skill_id,
+            kind: profile.kind,
+            provenance: profile.provenance,
+            owner: profile.owner,
+            maintainer: profile.maintainer,
+            lifecycle: profile.lifecycle,
+            risk_level: profile.risk_level,
+            supported_agents: profile.supported_agents,
+            dependencies: profile.dependencies,
+            permissions: profile.permissions,
+            notes: profile.notes,
+        }
+    }
+}
+
 impl SkillGovernanceInput {
     pub fn validate_and_normalize(mut self) -> Result<Self> {
         self.skill_id = required_text("skill_id", self.skill_id)?;

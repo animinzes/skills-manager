@@ -2646,6 +2646,11 @@ pub fn set_skill_tags_internal(
     skill_id: &str,
     tags: &[String],
 ) -> Result<(), AppError> {
+    let before = store
+        .get_tags_map()
+        .map_err(AppError::db)?
+        .remove(skill_id)
+        .unwrap_or_default();
     let mut normalized = Vec::new();
     for tag in tags {
         let tag = tag.trim();
@@ -2658,7 +2663,22 @@ pub fn set_skill_tags_internal(
         store.set_tags_for_skill(skill_id, &normalized)?;
         sync_metadata::ensure_skill_metadata_unlocked(store, skill_id)
     })
-    .map_err(AppError::db)
+    .map_err(AppError::db)?;
+    let name = store
+        .get_skill_by_id(skill_id)
+        .ok()
+        .flatten()
+        .map(|skill| skill.name)
+        .unwrap_or_default();
+    store.log_audit(
+        AuditDraft::new("set_tags")
+            .skill(skill_id, name)
+            .detail(
+                serde_json::json!({ "before": before, "after": normalized }).to_string(),
+            )
+            .ok(),
+    );
+    Ok(())
 }
 
 /// Globally rename a tag across all skills (used by the tag filter bar). If the
@@ -2689,14 +2709,20 @@ pub fn rename_tag_internal(
     if new_name == old_name {
         return Ok(Vec::new());
     }
-    sync_metadata::with_repo_lock("rename tag", || {
+    let affected = sync_metadata::with_repo_lock("rename tag", || {
         let affected = store.rename_tag(old_name, new_name)?;
         for skill_id in &affected {
             sync_metadata::ensure_skill_metadata_unlocked(store, skill_id)?;
         }
         Ok(affected)
     })
-    .map_err(AppError::db)
+    .map_err(AppError::db)?;
+    store.log_audit(
+        AuditDraft::new("rename_tag")
+            .detail(format!("{old_name} -> {new_name}; {} skills", affected.len()))
+            .ok(),
+    );
+    Ok(affected)
 }
 
 /// Globally delete a tag from all skills (used by the tag filter bar).
@@ -2712,14 +2738,20 @@ pub fn delete_tag_internal(store: &SkillStore, name: &str) -> Result<Vec<String>
     if name.is_empty() {
         return Err(AppError::invalid_input("Tag name cannot be empty"));
     }
-    sync_metadata::with_repo_lock("delete tag", || {
+    let affected = sync_metadata::with_repo_lock("delete tag", || {
         let affected = store.delete_tag(name)?;
         for skill_id in &affected {
             sync_metadata::ensure_skill_metadata_unlocked(store, skill_id)?;
         }
         Ok(affected)
     })
-    .map_err(AppError::db)
+    .map_err(AppError::db)?;
+    store.log_audit(
+        AuditDraft::new("delete_tag")
+            .detail(format!("{name}; {} skills", affected.len()))
+            .ok(),
+    );
+    Ok(affected)
 }
 
 #[tauri::command]

@@ -32,7 +32,7 @@ fn schedule_tray_refresh(app: &AppHandle) {
     crate::schedule_tray_refresh(app);
 }
 
-fn sync_skill_to_tool_internal(
+pub(crate) fn sync_skill_to_tool_internal(
     store: &SkillStore,
     skill_id: &str,
     tool: &str,

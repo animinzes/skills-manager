@@ -3,6 +3,7 @@ pub mod browse;
 pub mod git_backup;
 pub mod governance;
 pub mod projects;
+pub mod registry;
 pub mod scan;
 pub mod presets;
 pub mod settings;
