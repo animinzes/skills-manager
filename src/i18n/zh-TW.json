@@ -801,6 +801,7 @@
     "gitErrorGeneric": "Git 操作失敗，請檢查設定中的遠端倉庫位址後重試。"
   },
   "common": {
+    "refresh": "重新偵測",
     "loading": "載入中...",
     "error": "出錯了",
     "requestFailed": "請求失敗",
