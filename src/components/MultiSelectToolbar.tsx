@@ -1,4 +1,4 @@
-import { Trash2, CheckCircle2, Circle, RotateCcw, Tag, Download, Upload } from "lucide-react";
+import { Trash2, CheckCircle2, Circle, RotateCcw, Tag, Download, Upload, ArrowDownToLine } from "lucide-react";
 import { cn } from "../utils";
 
 interface MultiSelectToolbarLabels {
@@ -14,6 +14,7 @@ interface MultiSelectToolbarLabels {
   deselectAll: string;
   cancel: string;
   editTags?: string;
+  deploy?: string;
 }
 
 interface MultiSelectToolbarProps {
@@ -36,6 +37,8 @@ interface MultiSelectToolbarProps {
   onSelectAll: () => void;
   onCancel: () => void;
   onEditTags?: () => void;
+  onDeploy?: () => void;
+  deploying?: boolean;
 }
 
 export function MultiSelectToolbar({
@@ -58,6 +61,8 @@ export function MultiSelectToolbar({
   onSelectAll,
   onCancel,
   onEditTags,
+  onDeploy,
+  deploying = false,
 }: MultiSelectToolbarProps) {
   return (
     <div className="flex items-center gap-2 px-1 py-1.5">
@@ -94,6 +99,16 @@ export function MultiSelectToolbar({
             >
               <Upload className={cn("h-3.5 w-3.5", updatingCenter && "animate-spin")} />
               {labels.updateCenter}
+            </button>
+          )}
+          {onDeploy && labels.deploy && (
+            <button
+              onClick={onDeploy}
+              disabled={deploying}
+              className="inline-flex items-center gap-1.5 rounded-md bg-sky-700/90 px-2.5 py-1 text-[13px] font-medium text-white transition-colors hover:bg-sky-600 disabled:opacity-50"
+            >
+              <ArrowDownToLine className={cn("h-3.5 w-3.5", deploying && "animate-pulse")} />
+              {labels.deploy}
             </button>
           )}
           {onEditTags && labels.editTags && (

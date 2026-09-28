@@ -224,7 +224,12 @@
   "registry": {
     "title": "技能注册表",
     "subtitle": "集中管理技能分类、标签、套件、依赖和全部修改记录。",
-    "tabs": { "skills": "技能", "suites": "套件", "resources": "工具与服务", "history": "修改历史" },
+    "tabs": {
+      "skills": "技能",
+      "suites": "套件",
+      "resources": "工具与服务",
+      "history": "修改历史"
+    },
     "search": "搜索技能或标签",
     "allCategories": "全部分类",
     "allTags": "全部标签",
@@ -546,6 +551,20 @@
       "addButton": "添加",
       "clickToRemove": "点击标记为移除",
       "undoRemove": "点击保留此标签"
+    },
+    "batchDeploy": "部署到 Agent（{{count}}）",
+    "batchDeployDone": "已把 {{count}} 个技能部署到 {{agents}} 个 Agent",
+    "batchUndeployDone": "已从 {{agents}} 个 Agent 取消部署 {{count}} 个技能",
+    "batchDeployDialog": {
+      "title": "批量部署（{{count}} 个技能）",
+      "mode": {
+        "add": "部署",
+        "remove": "取消部署"
+      },
+      "noAgents": "没有可用的 Agent。",
+      "hint": "按单个计划批量执行：任一目标存在非本应用管理的内容时，整批拒绝执行，不会做一半。",
+      "addConfirm": "部署 {{count}} 个 → {{agents}} 个 Agent",
+      "removeConfirm": "从 {{agents}} 个 Agent 取消 {{count}} 个"
     }
   },
   "install": {

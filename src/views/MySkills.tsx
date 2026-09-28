@@ -35,6 +35,7 @@ import { TagRenameDialog } from "../components/TagRenameDialog";
 import { SkillDetailPanel } from "../components/SkillDetailPanel";
 import { MultiSelectToolbar } from "../components/MultiSelectToolbar";
 import { BatchTagDialog } from "../components/BatchTagDialog";
+import { BatchDeployDialog } from "../components/BatchDeployDialog";
 import { SyncDots } from "../components/SyncDots";
 import { ToggleSwitch } from "../components/ToggleSwitch";
 import { CardActionMenu } from "../components/CardActionMenu";
@@ -159,6 +160,8 @@ export function MySkills() {
   const refreshAfterDeleteRef = useRef<number | null>(null);
   const [batchDeleteConfirm, setBatchDeleteConfirm] = useState(false);
   const [batchTagDialogOpen, setBatchTagDialogOpen] = useState(false);
+  const [batchDeployDialogOpen, setBatchDeployDialogOpen] = useState(false);
+  const [batchDeploying, setBatchDeploying] = useState(false);
   const [checkingAll, setCheckingAll] = useState(false);
   const [checkingSkillId, setCheckingSkillId] = useState<string | null>(null);
   const [updatingSkillId, setUpdatingSkillId] = useState<string | null>(null);
@@ -571,6 +574,34 @@ export function MySkills() {
       exitMultiSelect();
       setBatchDeleteConfirm(false);
       await Promise.all([refreshManagedSkills(), refreshPresets()]);
+    }
+  };
+
+  const batchDeployAgents = useMemo(
+    () =>
+      tools
+        .filter((tool) => tool.installed && tool.enabled)
+        .map((tool) => ({ key: tool.key, displayName: tool.display_name })),
+    [tools]
+  );
+
+  const handleBatchApplyAgents = async (toolKeys: string[], mode: "add" | "remove") => {
+    const ids = Array.from(selectedIds);
+    setBatchDeploying(true);
+    try {
+      await api.applySkillsToAgents(ids, toolKeys, mode);
+      toast.success(
+        t(mode === "add" ? "mySkills.batchDeployDone" : "mySkills.batchUndeployDone", {
+          count: ids.length,
+          agents: toolKeys.length,
+        })
+      );
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, t("common.error")));
+    } finally {
+      setBatchDeploying(false);
+      exitMultiSelect();
+      await refreshManagedSkills();
     }
   };
 
@@ -1185,6 +1216,7 @@ export function MySkills() {
             deselectAll: t("mySkills.deselectAll"),
             cancel: t("common.cancel"),
             editTags: t("mySkills.batchEditTags", { count: selectedIds.size }),
+            deploy: t("mySkills.batchDeploy", { count: selectedIds.size }),
           }}
           onUpdate={handleBatchRefresh}
           onDelete={() => setBatchDeleteConfirm(true)}
@@ -1192,6 +1224,8 @@ export function MySkills() {
           onSelectAll={handleSelectAll}
           onCancel={exitMultiSelect}
           onEditTags={() => setBatchTagDialogOpen(true)}
+          onDeploy={() => setBatchDeployDialogOpen(true)}
+          deploying={batchDeploying}
         />
       )}
 
@@ -1781,6 +1815,14 @@ export function MySkills() {
           </div>
         </>
       )}
+        <BatchDeployDialog
+          open={batchDeployDialogOpen}
+          skillCount={selectedIds.size}
+          agents={batchDeployAgents}
+          onClose={() => setBatchDeployDialogOpen(false)}
+          onApply={handleBatchApplyAgents}
+        />
+
       <BatchTagDialog
         open={batchTagDialogOpen}
         skills={skills.filter((s) => selectedIds.has(s.id))}

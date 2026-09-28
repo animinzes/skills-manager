@@ -224,7 +224,12 @@
   "registry": {
     "title": "技能註冊表",
     "subtitle": "集中管理技能分類、標籤、套件、依賴和全部修改記錄。",
-    "tabs": { "skills": "技能", "suites": "套件", "resources": "工具與服務", "history": "修改歷史" },
+    "tabs": {
+      "skills": "技能",
+      "suites": "套件",
+      "resources": "工具與服務",
+      "history": "修改歷史"
+    },
     "search": "搜尋技能或標籤",
     "allCategories": "全部分類",
     "allTags": "全部標籤",
@@ -503,7 +508,21 @@
     "batchEnable": "啟用 {{count}} 個",
     "batchDisable": "停用 {{count}} 個",
     "batchEnabled": "已啟用 {{count}} 個 Skill",
-    "batchDisabled": "已停用 {{count}} 個 Skill"
+    "batchDisabled": "已停用 {{count}} 個 Skill",
+    "batchDeploy": "部署到 Agent（{{count}}）",
+    "batchDeployDone": "已把 {{count}} 個技能部署到 {{agents}} 個 Agent",
+    "batchUndeployDone": "已從 {{agents}} 個 Agent 取消部署 {{count}} 個技能",
+    "batchDeployDialog": {
+      "title": "批次部署（{{count}} 個技能）",
+      "mode": {
+        "add": "部署",
+        "remove": "取消部署"
+      },
+      "noAgents": "沒有可用的 Agent。",
+      "hint": "按單一計畫批次執行：任一目標存在非本應用程式管理的內容時，整批拒絕執行，不會做一半。",
+      "addConfirm": "部署 {{count}} 個 → {{agents}} 個 Agent",
+      "removeConfirm": "從 {{agents}} 個 Agent 取消 {{count}} 個"
+    }
   },
   "install": {
     "title": "安裝 Skills",

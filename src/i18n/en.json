@@ -224,7 +224,12 @@
   "registry": {
     "title": "Registry",
     "subtitle": "Manage skill categories, tags, suites, dependencies, and the complete modification history.",
-    "tabs": { "skills": "Skills", "suites": "Suites", "resources": "Tools & services", "history": "Modification history" },
+    "tabs": {
+      "skills": "Skills",
+      "suites": "Suites",
+      "resources": "Tools & services",
+      "history": "Modification history"
+    },
     "search": "Search skills or tags",
     "allCategories": "All categories",
     "allTags": "All tags",
@@ -546,6 +551,20 @@
       "addButton": "Add",
       "clickToRemove": "Click to mark for removal",
       "undoRemove": "Click to keep this tag"
+    },
+    "batchDeploy": "Deploy to Agents ({{count}})",
+    "batchDeployDone": "Deployed {{count}} skills to {{agents}} agents",
+    "batchUndeployDone": "Undeployed {{count}} skills from {{agents}} agents",
+    "batchDeployDialog": {
+      "title": "Batch deploy ({{count}} skills)",
+      "mode": {
+        "add": "Deploy",
+        "remove": "Undeploy"
+      },
+      "noAgents": "No available agents.",
+      "hint": "Runs as one planned batch: if any target holds unmanaged content, the whole batch is refused instead of half-applying.",
+      "addConfirm": "Deploy {{count}} → {{agents}} agents",
+      "removeConfirm": "Undeploy {{count}} from {{agents}} agents"
     }
   },
   "install": {

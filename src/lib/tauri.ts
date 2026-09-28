@@ -521,6 +521,13 @@ export const setSkillToolToggle = (
 ) =>
   invoke<void>("set_skill_tool_toggle", { skillId, presetId, tool, enabled });
 
+export const applySkillsToAgents = (
+  skillIds: string[],
+  toolKeys: string[],
+  mode: "add" | "remove"
+) =>
+  invoke<void>("apply_skills_to_agents", { skillIds, toolKeys, mode });
+
 // ── Scan ──
 
 export const scanLocalSkills = () => invoke<ScanResult>("scan_local_skills");

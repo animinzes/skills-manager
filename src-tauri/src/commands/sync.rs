@@ -9,7 +9,7 @@ use crate::core::{
     sync_engine, sync_metadata, tool_adapters,
     tool_service,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 pub struct SkillToolToggleDto {
@@ -198,6 +198,46 @@ fn log_sync_outcome(
         Err(e) => draft.fail(e.to_string()),
     };
     store.log_audit(draft);
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SkillsApplyMode {
+    Add,
+    Remove,
+}
+
+impl From<SkillsApplyMode> for scenario_service::BatchApplyMode {
+    fn from(value: SkillsApplyMode) -> Self {
+        match value {
+            SkillsApplyMode::Add => scenario_service::BatchApplyMode::Add,
+            SkillsApplyMode::Remove => scenario_service::BatchApplyMode::Remove,
+        }
+    }
+}
+
+/// Deploy (or undeploy) an explicit multi-select batch of skills to the
+/// agents the user picked. Unlike looping `sync_skill_to_tool` from the UI,
+/// this plans every (skill, agent) pair up front through
+/// `apply_skills_to_tools`, so a batch that would clobber unmanaged content
+/// is refused as a whole instead of half-applying (#363).
+#[tauri::command]
+pub async fn apply_skills_to_agents(
+    app: AppHandle,
+    skill_ids: Vec<String>,
+    tool_keys: Vec<String>,
+    mode: SkillsApplyMode,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<(), AppError> {
+    let store = store.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        scenario_service::apply_skills_to_tools(&store, &skill_ids, &tool_keys, mode.into())
+    })
+    .await?;
+    if result.is_ok() {
+        schedule_tray_refresh(&app);
+    }
+    result
 }
 
 #[tauri::command]
