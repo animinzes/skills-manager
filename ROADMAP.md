@@ -50,7 +50,7 @@
 **验收**：向 ZCode 部署一个技能后，ZCode 新会话能发现该技能；取消部署后不再发现。
 **风险**：S；上游适配器接口已成熟，照葫芦画瓢。
 
-## M2 管理操作完备（核心批次）
+## M2 管理操作完备（核心批次）◐ 第一增量完成（2026-09-28 提交 95492c0：多选批量部署/取消部署到任意 agent——新命令 apply_skills_to_agents 走 apply_skills_to_tools 整批计划+整批拒绝语义，BatchDeployDialog 选目标 agent，tsc/eslint/436 测试全过）
 
 **目标**：把 REQUIREMENTS 第二节八类管理动词全部做成可操作——这是产品的主轴。
 
