@@ -1,10 +1,11 @@
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{
-    error::AppError,
+    error::{AppError, TargetConflictDetail},
     skill_store::{ScenarioRecord, SkillStore, SkillTargetRecord},
     sync_engine, tool_adapters,
     tool_service,
@@ -77,6 +78,7 @@ pub fn collect_scenario_sync_targets(
         .get_skills_for_scenario(scenario_id)
         .map_err(AppError::db)?;
     let configured_mode = store.get_setting("sync_mode").map_err(AppError::db)?;
+    let existing_targets = store.get_all_targets().map_err(AppError::db)?;
     let mut targets = Vec::new();
 
     for skill in &skills {
@@ -84,7 +86,7 @@ pub fn collect_scenario_sync_targets(
         let target_name = sync_engine::target_dir_name(&source, &skill.name);
         let adapters = enabled_installed_adapters_for_scenario_skill(store, scenario_id, &skill.id)?;
         for adapter in &adapters {
-            let target = adapter.skills_dir().join(&target_name);
+            let target = deployment_target(adapter, &target_name, &skill.id, &existing_targets);
             let mode = sync_engine::sync_mode_for_tool(&adapter.key, configured_mode.as_deref());
             targets.push(ScenarioSyncTarget {
                 skill_id: skill.id.clone(),
@@ -99,6 +101,30 @@ pub fn collect_scenario_sync_targets(
     }
 
     Ok(targets)
+}
+
+fn deployment_target(
+    adapter: &tool_adapters::ToolAdapter,
+    target_name: &str,
+    skill_id: &str,
+    existing_targets: &[SkillTargetRecord],
+) -> PathBuf {
+    let root = adapter.skills_dir();
+    existing_targets
+        .iter()
+        .find(|target| target.skill_id == skill_id && target.tool == adapter.key)
+        .map(|target| PathBuf::from(&target.target_path))
+        .filter(|path| is_skill_path_within_root(path, &root))
+        .unwrap_or_else(|| root.join(target_name))
+}
+
+fn is_skill_path_within_root(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|relative| {
+        !relative.as_os_str().is_empty()
+            && relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)))
+    })
 }
 
 pub fn preview_scenario_sync(
@@ -205,6 +231,23 @@ fn replace_policy(recorded_mode: Option<&str>) -> sync_engine::ReplacePolicy<'_>
     }
 }
 
+/// One target a sync refused to write because it is not ours to replace.
+///
+/// Kept structured all the way to the caller: an agent driving the CLI has to
+/// tell the user *which* path is in the way and what to do about it, and a
+/// pre-rendered English sentence cannot be branched on (#363).
+#[derive(Debug, Clone, Serialize)]
+pub struct TargetConflict {
+    pub target: PathBuf,
+    pub reason: String,
+}
+
+impl fmt::Display for TargetConflict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&sync_engine::refusal_message(&self.target, &self.reason))
+    }
+}
+
 /// Sync every desired target, returning the ownership refusals rather than
 /// failing on them.
 ///
@@ -216,7 +259,7 @@ fn replace_policy(recorded_mode: Option<&str>) -> sync_engine::ReplacePolicy<'_>
 pub fn sync_desired_targets(
     store: &SkillStore,
     desired_targets: &[ScenarioSyncTarget],
-) -> Result<Vec<String>, AppError> {
+) -> Result<Vec<TargetConflict>, AppError> {
     let batch_start = Instant::now();
     let existing_targets: HashMap<(String, String), SkillTargetRecord> = store
         .get_all_targets()
@@ -228,7 +271,7 @@ pub fn sync_desired_targets(
     let mut synced_count = 0usize;
     let mut skipped_count = 0usize;
     let mut failed_count = 0usize;
-    let mut refusals: Vec<String> = Vec::new();
+    let mut refusals: Vec<TargetConflict> = Vec::new();
 
     for desired in desired_targets {
         let target_start = Instant::now();
@@ -242,18 +285,38 @@ pub fn sync_desired_targets(
         if let Some(existing) = existing_targets.get(&key) {
             let target_path = PathBuf::from(&existing.target_path);
             if target_path != desired.target {
-                match sync_engine::remove_recorded_target(&target_path, &existing.mode) {
-                    Ok(true) => {}
-                    Ok(false) => log::warn!(
-                        "Keeping {}: no longer matches its recorded {} deployment; \
-                         dropping the stale record only",
+                // Adapters can share a skills directory: amp and replit both
+                // deploy to ~/.config/agents/skills, and kimi did too until it
+                // moved to ~/.kimi-code/skills (#270). When one of them is
+                // retargeted, the old path is not this tool's leftover — it is
+                // still another tool's live deployment. Drop the stale record,
+                // but leave the directory to whoever is still deployed there.
+                let claimed_by_another_tool = desired_targets.iter().any(|other| {
+                    other.tool != desired.tool
+                        && other.skill_id == desired.skill_id
+                        && other.target == target_path
+                });
+                if claimed_by_another_tool {
+                    log::info!(
+                        "Keeping {}: still the deployment target of another tool; \
+                         dropping {}'s stale record only",
                         target_path.display(),
-                        existing.mode
-                    ),
-                    Err(e) => log::warn!(
-                        "Failed to remove stale target {}: {e}",
-                        target_path.display()
-                    ),
+                        desired.tool
+                    );
+                } else {
+                    match sync_engine::remove_recorded_target(&target_path, &existing.mode) {
+                        Ok(true) => {}
+                        Ok(false) => log::warn!(
+                            "Keeping {}: no longer matches its recorded {} deployment; \
+                             dropping the stale record only",
+                            target_path.display(),
+                            existing.mode
+                        ),
+                        Err(e) => log::warn!(
+                            "Failed to remove stale target {}: {e}",
+                            target_path.display()
+                        ),
+                    }
                 }
                 if let Err(e) = store.delete_target(&desired.skill_id, &desired.tool) {
                     log::warn!(
@@ -340,7 +403,10 @@ pub fn sync_desired_targets(
                 // asked for is not deployed, and saying "ok" to that is the
                 // half of #363 that made the data loss invisible.
                 if let Some(refused) = e.downcast_ref::<sync_engine::ReplaceRefused>() {
-                    refusals.push(refused.to_string());
+                    refusals.push(TargetConflict {
+                        target: refused.target.clone(),
+                        reason: refused.reason.to_string(),
+                    });
                 }
                 log::warn!(
                     "Failed to sync skill {} ({}) to {} after {} ms: {e}",
@@ -364,19 +430,78 @@ pub fn sync_desired_targets(
     Ok(refusals)
 }
 
+/// Preview the ownership decisions made by `sync_desired_targets` without changing targets.
+pub fn preflight_scenario_sync_targets(
+    store: &SkillStore,
+    desired_targets: &[ScenarioSyncTarget],
+) -> Result<(), AppError> {
+    let existing_targets = store.get_all_targets().map_err(AppError::db)?;
+    let mut conflicts = Vec::new();
+    for desired in desired_targets {
+        let recorded_mode = existing_targets
+            .iter()
+            .find(|existing| {
+                existing.skill_id == desired.skill_id
+                    && existing.tool == desired.tool
+                    && PathBuf::from(&existing.target_path) == desired.target
+            })
+            .map(|existing| existing.mode.as_str());
+        if let Err(error) = sync_engine::preflight_replace(
+            &desired.source,
+            &desired.target,
+            desired.mode,
+            replace_policy(recorded_mode),
+        ) {
+            if let Some(refused) = error.downcast_ref::<sync_engine::ReplaceRefused>() {
+                conflicts.push(TargetConflictDetail {
+                    path: refused.target.display().to_string(),
+                    reason: refused.reason.to_string(),
+                });
+            } else {
+                return Err(AppError::io(error));
+            }
+        }
+    }
+    if conflicts.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::target_conflict(
+            format!(
+                "Refusing to sync: {} target(s) would overwrite content that is not ours. Nothing was changed.",
+                conflicts.len()
+            ),
+            conflicts,
+        ))
+    }
+}
+
 /// Turn reported refusals into the error a user-initiated command should show.
 /// Deliberately says only that these targets were skipped — everything else in
 /// the operation did apply, so claiming "nothing happened" would be false.
-pub fn refusals_to_error(refusals: Vec<String>) -> Result<(), AppError> {
+pub fn refusals_to_error(refusals: Vec<TargetConflict>) -> Result<(), AppError> {
     if refusals.is_empty() {
         return Ok(());
     }
-    Err(AppError::invalid_input(format!(
+    let summary = format!(
         "{} skill(s) were skipped because their target is not ours to replace \
          (nothing at those paths was deleted; everything else was applied). {}",
         refusals.len(),
-        refusals.join("; ")
-    )))
+        refusals
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+    Err(AppError::target_conflict(
+        summary,
+        refusals
+            .into_iter()
+            .map(|c| TargetConflictDetail {
+                path: c.target.display().to_string(),
+                reason: c.reason,
+            })
+            .collect(),
+    ))
 }
 
 pub fn unsync_obsolete_scenario_targets(
@@ -441,7 +566,10 @@ pub fn unsync_scenario_skills(store: &SkillStore, scenario_id: &str) -> Result<(
     Ok(())
 }
 
-pub fn sync_scenario_skills(store: &SkillStore, scenario_id: &str) -> Result<Vec<String>, AppError> {
+pub fn sync_scenario_skills(
+    store: &SkillStore,
+    scenario_id: &str,
+) -> Result<Vec<TargetConflict>, AppError> {
     let desired_targets = collect_scenario_sync_targets(store, scenario_id)?;
     sync_desired_targets(store, &desired_targets)
 }
@@ -449,7 +577,7 @@ pub fn sync_scenario_skills(store: &SkillStore, scenario_id: &str) -> Result<Vec
 pub fn apply_scenario_to_default(
     store: &SkillStore,
     scenario_id: &str,
-) -> Result<Vec<String>, AppError> {
+) -> Result<Vec<TargetConflict>, AppError> {
     ensure_scenario_exists(store, scenario_id)?;
     let desired_targets = collect_scenario_sync_targets(store, scenario_id)?;
 
@@ -479,7 +607,7 @@ pub fn sync_skill_to_active_scenario(
             let target_name = sync_engine::target_dir_name(&source, &skill.name);
             let old_targets = store.get_targets_for_skill(skill_id).unwrap_or_default();
             for adapter in &adapters {
-                let target = adapter.skills_dir().join(&target_name);
+                let target = deployment_target(adapter, &target_name, skill_id, &old_targets);
                 let mut recorded_mode: Option<String> = None;
                 if let Some(old) = old_targets.iter().find(|t| t.tool == adapter.key) {
                     let old_path = PathBuf::from(&old.target_path);
@@ -651,18 +779,81 @@ pub fn sync_active_scenario_to_tool(store: &SkillStore, tool_key: &str) {
 /// thing the user asked us to take over. Ordinary deployment must never do
 /// that, so the two intents cannot share a code path (#363).
 #[derive(Debug, Clone, Copy)]
-pub enum DeployIntent {
+pub enum DeployIntent<'a> {
     /// Ordinary deployment: replace only what our own records vouch for.
     Managed,
-    /// The user explicitly asked us to take over whatever is at this path.
-    AdoptExisting,
+    /// The user explicitly asked us to take over this scanned skill path.
+    AdoptExisting(&'a Path),
+}
+
+/// Re-point every `source_ref` that names `target` at the referring skill's own
+/// central copy, ahead of an adoption that replaces `target` with a managed
+/// deployment (#425).
+///
+/// An adopted directory stops being an independent copy the moment the
+/// adoption runs: it becomes a link to (or copy of) central that can be
+/// removed at any time — by the agent's own skill management cleaning up what
+/// it does not recognize, or by a later undeploy. A skill whose `source_ref`
+/// still names that directory then fails its update check with
+/// `source_missing` forever, even though the central copy is intact.
+///
+/// The central copy always exists while the skill row does, so re-pointing
+/// keeps the source resolvable; the content-hash comparison against it keeps
+/// reporting `up_to_date`. Matching is by exact string or canonicalized path,
+/// because import records can spell the same directory with mixed separators
+/// than the deployment target computed from the adapter.
+pub(crate) fn detach_source_refs_from_adoption_target(
+    store: &SkillStore,
+    target: &Path,
+) -> Result<(), AppError> {
+    let target_str = target.to_string_lossy().into_owned();
+    // `canonicalize` resolves through symlinks, but a symlinked target is only
+    // unlinked by the replacement below (`remove_classified_target` treats
+    // LinkToSource/ForeignLink as `remove_link`) -- whatever it pointed at
+    // survives untouched. Resolving through the link would re-point the
+    // source_ref of a directory that is still on disk and still the user's
+    // source of truth, and the update check would then compare central to
+    // itself forever. An exact string match still applies: if the source_ref
+    // *is* the link path, that link really is going away.
+    let target_canonical = if std::fs::symlink_metadata(target)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        None
+    } else {
+        std::fs::canonicalize(target).ok()
+    };
+    for skill in store.get_all_skills().map_err(AppError::db)? {
+        let Some(source_ref) = skill.source_ref.as_deref() else {
+            continue;
+        };
+        // Already re-pointed by a previous adoption — nothing to do.
+        if source_ref == skill.central_path {
+            continue;
+        }
+        let points_at_target = source_ref == target_str
+            || target_canonical.as_ref().is_some_and(|canonical| {
+                std::fs::canonicalize(source_ref).is_ok_and(|source| &source == canonical)
+            });
+        if points_at_target {
+            store
+                .update_skill_source_ref(&skill.id, &skill.central_path)
+                .map_err(AppError::db)?;
+            log::info!(
+                "adoption: re-pointed source_ref of skill '{}' at its central copy; \
+                 the adopted agent directory is now a deployment, not a source (#425)",
+                skill.name
+            );
+        }
+    }
+    Ok(())
 }
 
 pub fn sync_single_skill_to_tool(
     store: &SkillStore,
     skill_id: &str,
     tool: &str,
-    intent: DeployIntent,
+    intent: DeployIntent<'_>,
 ) -> Result<(), AppError> {
     let adapter = tool_adapters::find_adapter_with_store(store, tool)
         .ok_or_else(|| AppError::not_found(format!("Unknown tool: {}", tool)))?;
@@ -687,26 +878,46 @@ pub fn sync_single_skill_to_tool(
         .ok_or_else(|| AppError::not_found("Skill not found"))?;
 
     let source = PathBuf::from(&skill.central_path);
-    let target = adapter
-        .skills_dir()
-        .join(sync_engine::target_dir_name(&source, &skill.name));
+    let existing_targets = store.get_targets_for_skill(skill_id).unwrap_or_default();
+    let target = match intent {
+        DeployIntent::AdoptExisting(path) => {
+            let root = adapter.skills_dir();
+            if !is_skill_path_within_root(path, &root) {
+                return Err(AppError::invalid_input(
+                    "Skill path is outside the agent skills directory",
+                ));
+            }
+            path.to_path_buf()
+        }
+        DeployIntent::Managed => deployment_target(
+            &adapter,
+            &sync_engine::target_dir_name(&source, &skill.name),
+            skill_id,
+            &existing_targets,
+        ),
+    };
     let configured_mode = store.get_setting("sync_mode").map_err(AppError::db)?;
     let mode = sync_engine::sync_mode_for_tool(tool, configured_mode.as_deref());
     let recorded_mode = match intent {
-        DeployIntent::AdoptExisting => None,
-        DeployIntent::Managed => store
-            .get_targets_for_skill(skill_id)
-            .unwrap_or_default()
-            .into_iter()
+        DeployIntent::AdoptExisting(_) => None,
+        DeployIntent::Managed => existing_targets
+            .iter()
             .find(|existing| {
                 existing.tool == tool && PathBuf::from(&existing.target_path) == target
             })
-            .map(|existing| existing.mode),
+            .map(|existing| existing.mode.clone()),
     };
     let policy = match intent {
-        DeployIntent::AdoptExisting => sync_engine::ReplacePolicy::UserConfirmed,
+        DeployIntent::AdoptExisting(_) => sync_engine::ReplacePolicy::UserConfirmed,
         DeployIntent::Managed => replace_policy(recorded_mode.as_deref()),
     };
+    if matches!(intent, DeployIntent::AdoptExisting(_)) {
+        // The directory at `target` may still be the import source of the very
+        // skill being deployed (or of a sibling record): re-point those at
+        // central BEFORE the replacement, so a failure partway through the
+        // adoption can never leave a dangling source behind (#425).
+        detach_source_refs_from_adoption_target(store, &target)?;
+    }
     let actual_mode = sync_engine::sync_skill(&source, &target, mode, policy).map_err(AppError::io)?;
 
     let now = chrono::Utc::now().timestamp_millis();
@@ -756,15 +967,28 @@ pub fn apply_skills_to_tools(
     }
 
     match mode {
-        BatchApplyMode::Add => apply_add(store, skill_ids, tool_keys),
+        BatchApplyMode::Add => apply_add(store, skill_ids, tool_keys, false),
         BatchApplyMode::Remove => apply_remove(store, skill_ids, tool_keys),
     }
+}
+
+/// Check the same targets and ownership rules as batch deployment without writing.
+pub fn preflight_add_skills_to_tools(
+    store: &SkillStore,
+    skill_ids: &[String],
+    tool_keys: &[String],
+) -> Result<(), AppError> {
+    if skill_ids.is_empty() || tool_keys.is_empty() {
+        return Ok(());
+    }
+    apply_add(store, skill_ids, tool_keys, true)
 }
 
 fn apply_add(
     store: &SkillStore,
     skill_ids: &[String],
     tool_keys: &[String],
+    preflight_only: bool,
 ) -> Result<(), AppError> {
     let configured_mode = store.get_setting("sync_mode").map_err(AppError::db)?;
     let disabled = tool_service::get_disabled_tools(store);
@@ -816,7 +1040,7 @@ fn apply_add(
                 tool_key: tool_key.clone(),
                 mode: sync_engine::sync_mode_for_tool(tool_key, configured_mode.as_deref()),
                 source: source.clone(),
-                target: adapter.skills_dir().join(&target_name),
+                target: deployment_target(adapter, &target_name, skill_id, &existing_targets),
             });
         }
     }
@@ -825,7 +1049,12 @@ fn apply_add(
     // same deployment path (`target_dir_name` uses the basename only), so the
     // second would silently overwrite the first. Neither is the user's data,
     // but the result is a target whose contents don't match its record.
-    let mut conflicts: Vec<String> = Vec::new();
+    // Two library skills planning onto one path is a naming problem, not a
+    // user's directory being in the way — kept apart so the refusal that does
+    // mean the latter is the only thing tagged as a target conflict.
+    let mut duplicate_targets: Vec<String> = Vec::new();
+    let mut conflicts: Vec<TargetConflictDetail> = Vec::new();
+    let mut probe_errors: Vec<String> = Vec::new();
     // Keyed on skill id, not name: names are not unique, and two distinct
     // skills that happen to share one would otherwise slip through as "the
     // same skill" and silently overwrite each other.
@@ -834,7 +1063,7 @@ fn apply_add(
         let entry = (pair.skill.id.as_str(), pair.skill.name.as_str());
         if let Some((first_id, first_name)) = planned_paths.insert(pair.target.as_path(), entry) {
             if first_id != pair.skill.id {
-                conflicts.push(format!(
+                duplicate_targets.push(format!(
                     "{} — skills \"{}\" and \"{}\" both deploy here",
                     pair.target.display(),
                     first_name,
@@ -843,6 +1072,15 @@ fn apply_add(
             }
         }
     }
+    if !duplicate_targets.is_empty() {
+        return Err(AppError::invalid_input(format!(
+            "Refusing to deploy: {} target path(s) are claimed by two different skills. \
+             Nothing was changed. {}",
+            duplicate_targets.len(),
+            duplicate_targets.join("; ")
+        )));
+    }
+
     // Ownership belongs to the path, not to the (skill, tool) pair. When two
     // agents share a skills directory, a row for either one vouches for the
     // object there, so evidence is pooled per path before judging — otherwise
@@ -896,17 +1134,44 @@ fn apply_add(
             pair.mode,
             replace_policy(evidence_for(&pair.target, &mut key_memo)),
         ) {
-            conflicts.push(format!("{e}"));
+            // Keep the refusal's own path and reason: the caller may be an
+            // agent that has to name the directory in the way and offer the
+            // way out, which a flattened sentence cannot support.
+            match e.downcast_ref::<sync_engine::ReplaceRefused>() {
+                Some(refused) => conflicts.push(TargetConflictDetail {
+                    path: refused.target.display().to_string(),
+                    reason: refused.reason.to_string(),
+                }),
+                // Failing to even inspect the target (permissions, a broken
+                // mount) is an IO problem. Reporting it as a conflict would
+                // tell the caller to adopt or move content that may not exist.
+                None => probe_errors.push(format!("{}: {e}", pair.target.display())),
+            }
         }
     }
+    if !probe_errors.is_empty() {
+        return Err(AppError::io(format!(
+            "Refusing to deploy: {} target(s) could not be inspected. Nothing was changed. {}",
+            probe_errors.len(),
+            probe_errors.join("; ")
+        )));
+    }
     if !conflicts.is_empty() {
-        return Err(AppError::invalid_input(format!(
+        let summary = format!(
             "Refusing to deploy: {} of {} target(s) would overwrite content that is not ours. \
              Nothing was changed. {}",
             conflicts.len(),
             plan.len(),
-            conflicts.join("; ")
-        )));
+            conflicts
+                .iter()
+                .map(|c| sync_engine::refusal_message(Path::new(&c.path), &c.reason))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+        return Err(AppError::target_conflict(summary, conflicts));
+    }
+    if preflight_only {
+        return Ok(());
     }
 
     let mut synced = 0usize;
@@ -1125,6 +1390,110 @@ mod sync_desired_targets_tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Two adapters can point at the same skills directory — `amp` and
+    /// `replit` both deploy to `~/.config/agents/skills`, and `kimi` did too
+    /// until it moved to `~/.kimi-code/skills` (#270). When one of them is
+    /// retargeted, its stale record must be dropped, but the directory the
+    /// others are still deployed to must survive: it is their live
+    /// deployment, not this tool's leftover.
+    #[test]
+    fn retargeting_one_tool_keeps_a_directory_another_tool_still_claims() {
+        let _lock = central_repo::test_base_dir_lock();
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("repo");
+        central_repo::set_test_base_dir_override(Some(base.clone()));
+        fs::create_dir_all(central_repo::skills_dir()).unwrap();
+        let store = SkillStore::new(&base.join("test.db")).unwrap();
+
+        let source = central_repo::skills_dir().join("skill-a");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "real source").unwrap();
+
+        // The shared deployment both tools were synced to.
+        let shared = tmp.path().join("shared-agents").join("skill-a");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("SKILL.md"), "real source").unwrap();
+
+        // Where the retargeted tool is moving to.
+        let moved = tmp.path().join("kimi-code").join("skill-a");
+
+        let skill = SkillRecord {
+            id: "skill-a".to_string(),
+            name: "skill-a".to_string(),
+            description: None,
+            source_type: "import".to_string(),
+            source_ref: Some(source.to_string_lossy().to_string()),
+            source_ref_resolved: None,
+            source_subpath: None,
+            source_branch: None,
+            source_revision: None,
+            remote_revision: None,
+            central_path: source.to_string_lossy().to_string(),
+            content_hash: Some("h1".to_string()),
+            enabled: true,
+            created_at: 1,
+            updated_at: 1,
+            status: "ok".to_string(),
+            update_status: "local_only".to_string(),
+            last_checked_at: None,
+            last_check_error: None,
+        };
+        store.insert_skill(&skill).unwrap();
+
+        for (id, tool) in [("target-amp", "amp"), ("target-kimi", "kimi")] {
+            store
+                .insert_target(&SkillTargetRecord {
+                    id: id.to_string(),
+                    skill_id: "skill-a".to_string(),
+                    tool: tool.to_string(),
+                    target_path: shared.to_string_lossy().to_string(),
+                    mode: "copy".to_string(),
+                    status: "ok".to_string(),
+                    synced_at: Some(1),
+                    last_error: None,
+                    source_hash: Some("h1".to_string()),
+                })
+                .unwrap();
+        }
+
+        // Adapter order puts amp before kimi, so amp is skipped as current
+        // before kimi reaches its retarget branch.
+        let desired = vec![
+            ScenarioSyncTarget {
+                skill_id: "skill-a".to_string(),
+                skill_name: "skill-a".to_string(),
+                tool: "amp".to_string(),
+                source: source.clone(),
+                target: shared.clone(),
+                mode: sync_engine::SyncMode::Copy,
+                source_hash: Some("h1".to_string()),
+            },
+            ScenarioSyncTarget {
+                skill_id: "skill-a".to_string(),
+                skill_name: "skill-a".to_string(),
+                tool: "kimi".to_string(),
+                source: source.clone(),
+                target: moved.clone(),
+                mode: sync_engine::SyncMode::Copy,
+                source_hash: Some("h1".to_string()),
+            },
+        ];
+
+        sync_desired_targets(&store, &desired).unwrap();
+
+        assert!(
+            shared.join("SKILL.md").exists(),
+            "amp's live deployment was deleted while retargeting kimi"
+        );
+        assert!(
+            moved.join("SKILL.md").exists(),
+            "kimi was not deployed to its new path"
+        );
+
+        central_repo::set_test_base_dir_override(None);
+    }
+
+
     /// Startup must survive a collision. `ensure_default_startup_scenario`
     /// reaches this function through `sync_scenario_skills`, and its caller
     /// chain ends at `initialize_store().expect(...)` in lib.rs — so returning
@@ -1162,7 +1531,24 @@ mod sync_desired_targets_tests {
         let refusals = sync_desired_targets(&store, &desired)
             .expect("a refusal must not surface as Err: that panics app startup");
         assert_eq!(refusals.len(), 1, "{refusals:?}");
-        assert!(refusals[0].contains("Refusing to replace"), "{refusals:?}");
+        assert!(
+            refusals[0].to_string().contains("Refusing to replace"),
+            "{refusals:?}"
+        );
+        // The path must survive as data, not only inside the sentence: an
+        // agent driving the CLI has to name the directory that is in the way.
+        assert_eq!(refusals[0].target, target);
+
+        // ...and it must still be a path when it reaches the caller's error.
+        let err = refusals_to_error(refusals).expect_err("a refusal must become an error here");
+        assert_eq!(err.kind, crate::core::error::ErrorKind::TargetConflict);
+        match err.details {
+            Some(ref details) => {
+                assert_eq!(details.conflicts.len(), 1);
+                assert_eq!(details.conflicts[0].path, target.display().to_string());
+            }
+            None => panic!("expected structured target-conflict details"),
+        }
         assert_eq!(
             fs::read_to_string(target.join("unmanaged.txt")).unwrap(),
             "DO_NOT_OVERWRITE"
@@ -1336,6 +1722,81 @@ mod sync_desired_targets_tests {
 
         // Sync must have run — target should now exist with the source content.
         assert!(target.join("SKILL.md").exists(), "missing target was not re-synced");
+
+        central_repo::set_test_base_dir_override(None);
+    }
+
+    /// `canonicalize` resolves through symlinks, but the replacement that
+    /// follows an adoption does not: a symlinked target is only unlinked, so
+    /// whatever it pointed at survives. Re-pointing on the resolved path would
+    /// silently orphan a directory that is still on disk and still the user's
+    /// source of truth -- later edits in it would never be seen again (#425).
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_adoption_target_does_not_detach_the_directory_it_points_at() {
+        let _lock = central_repo::test_base_dir_lock();
+        let tmp = tempdir().unwrap();
+        let base = tmp.path().join("repo");
+        central_repo::set_test_base_dir_override(Some(base.clone()));
+        fs::create_dir_all(central_repo::skills_dir()).unwrap();
+        let store = SkillStore::new(&base.join("test.db")).unwrap();
+
+        let central = central_repo::skills_dir().join("jira");
+        fs::create_dir_all(&central).unwrap();
+        fs::write(central.join("SKILL.md"), "central copy").unwrap();
+
+        // The folder the skill was imported from: still the user's source.
+        let import_src = tmp.path().join("claude").join("skills").join("jira");
+        fs::create_dir_all(&import_src).unwrap();
+        fs::write(import_src.join("SKILL.md"), "user copy").unwrap();
+
+        // Another agent's skills dir holds a symlink to that same folder.
+        let link = tmp.path().join("duo").join("skills").join("jira");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&import_src, &link).unwrap();
+
+        store
+            .insert_skill(&SkillRecord {
+                id: "jira".to_string(),
+                name: "jira".to_string(),
+                description: None,
+                source_type: "import".to_string(),
+                source_ref: Some(import_src.to_string_lossy().to_string()),
+                source_ref_resolved: None,
+                source_subpath: None,
+                source_branch: None,
+                source_revision: None,
+                remote_revision: None,
+                central_path: central.to_string_lossy().to_string(),
+                content_hash: Some("h1".to_string()),
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+                status: "ok".to_string(),
+                update_status: "local_only".to_string(),
+                last_checked_at: None,
+                last_check_error: None,
+            })
+            .unwrap();
+
+        // Adopting the link must leave the pointee's source_ref alone.
+        detach_source_refs_from_adoption_target(&store, &link).unwrap();
+        let after = store.get_skill_by_id("jira").unwrap().unwrap();
+        assert_eq!(
+            after.source_ref.as_deref(),
+            Some(import_src.to_string_lossy().as_ref()),
+            "a symlinked target detached the real directory it points at"
+        );
+
+        // But adopting the real directory still detaches it: that one is
+        // about to be replaced by a deployment.
+        detach_source_refs_from_adoption_target(&store, &import_src).unwrap();
+        let after = store.get_skill_by_id("jira").unwrap().unwrap();
+        assert_eq!(
+            after.source_ref.as_deref(),
+            Some(central.to_string_lossy().as_ref()),
+            "adopting the real source dir no longer re-points source_ref"
+        );
 
         central_repo::set_test_base_dir_override(None);
     }

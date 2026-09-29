@@ -1,7 +1,9 @@
+pub mod agent_definitions;
 pub mod app_state;
 pub mod audit_log;
 pub mod auto_backup;
 pub mod central_repo;
+pub mod cli_bridge;
 pub mod content_hash;
 pub mod crypto;
 pub mod error;
@@ -20,6 +22,7 @@ pub mod migrations;
 pub mod panic_log;
 pub mod path_guard;
 pub mod project_scanner;
+pub mod removals;
 pub mod repo_lock;
 pub mod scanner;
 pub mod scenario_service;

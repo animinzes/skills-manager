@@ -28,6 +28,151 @@ pub struct UpdateSkillResult {
     /// Whether the skill's file content actually changed.
     /// False when a monorepo commit didn't touch this skill's subdirectory.
     pub content_changed: bool,
+    /// What the update would remove, when it declined because of it (#256).
+    /// Non-empty means **nothing was changed**: show these and call again with
+    /// `approved_removals` set to `removal_approval` if the user accepts.
+    ///
+    /// Empty on every ordinary update, including approved ones.
+    pub pending_removals: Vec<PendingRemoval>,
+    /// Identifies exactly what `pending_removals` describes. Passing it back
+    /// approves *that* list against *that* revision and nothing else — if the
+    /// remote moves on, or the skill writes another file while the dialog is
+    /// open, the approval no longer matches and the user is asked again.
+    pub removal_approval: Option<String>,
+}
+
+/// Stands in for a revision when binding a re-import's approval: there is no
+/// remote to move on, but the removal set still has to be bound.
+const REIMPORT_APPROVAL_DOMAIN: &str = "reimport";
+
+/// Result of re-importing a local skill from its source path.
+#[derive(Debug, Serialize)]
+pub struct ReimportSkillResult {
+    pub skill: ManagedSkillDto,
+    /// Non-empty means **nothing was changed** — see [`UpdateSkillResult`].
+    pub pending_removals: Vec<PendingRemoval>,
+    /// Approves exactly `pending_removals` — see [`UpdateSkillResult`].
+    pub removal_approval: Option<String>,
+}
+
+/// Where a path about to be removed lives.
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingRemoval {
+    /// [`LIBRARY_LOCATION`], or the key of the agent whose deployed copy holds
+    /// it. The user needs to know which directory to go and rescue.
+    pub location: String,
+    pub path: String,
+}
+
+/// `PendingRemoval::location` for the central library, as opposed to an agent's
+/// deployed copy.
+pub const LIBRARY_LOCATION: &str = "library";
+
+enum UpdateOutcome {
+    Applied {
+        content_changed: bool,
+    },
+    /// Declined, having changed nothing.
+    Held {
+        pending: Vec<PendingRemoval>,
+        approval: String,
+    },
+}
+
+/// Everything a replacement would take away — from the library and from every
+/// copy-mode deployment of this skill.
+///
+/// `staged` is the tree about to be installed, or `None` when the library keeps
+/// what it already has. Even then the deployments are torn down and rebuilt from
+/// it, which loses files just as effectively, so they are always checked.
+///
+/// Compared against the *staged* tree rather than the source it came from: the
+/// installer drops `.git` and every symlink, so anything else would report a
+/// path as surviving that the swap goes on to remove.
+pub(crate) fn pending_removals_for(
+    store: &SkillStore,
+    skill: &SkillRecord,
+    staged: Option<&Path>,
+) -> Result<Vec<PendingRemoval>, AppError> {
+    let library = Path::new(&skill.central_path);
+    let mut pending = Vec::new();
+
+    if let Some(staged) = staged {
+        for path in crate::core::removals::removed_paths(library, staged).map_err(AppError::io)? {
+            pending.push(PendingRemoval {
+                location: LIBRARY_LOCATION.to_string(),
+                path,
+            });
+        }
+    }
+
+    let effective_new = staged.unwrap_or(library);
+    for target in store
+        .get_targets_for_skill(&skill.id)
+        .map_err(AppError::db)?
+    {
+        if target.mode != "copy" {
+            continue;
+        }
+        for path in
+            crate::core::removals::removed_paths(Path::new(&target.target_path), effective_new)
+                .map_err(AppError::io)?
+        {
+            pending.push(PendingRemoval {
+                location: target.tool.clone(),
+                path,
+            });
+        }
+    }
+    Ok(pending)
+}
+
+/// A stable name for one exact set of removals at one exact revision.
+fn removal_approval_token(revision: &str, pending: &[PendingRemoval]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(revision.as_bytes());
+    let mut rows: Vec<String> = pending
+        .iter()
+        .map(|p| format!("{}\u{0}{}", p.location, p.path))
+        .collect();
+    rows.sort();
+    for row in rows {
+        hasher.update(row.as_bytes());
+        hasher.update([0]);
+    }
+    hex::encode(hasher.finalize())
+}
+
+/// Removes a staged directory unless the swap claimed it.
+struct StagedPathGuard<'a> {
+    path: &'a Path,
+    armed: std::cell::Cell<bool>,
+}
+
+impl<'a> StagedPathGuard<'a> {
+    fn new(path: &'a Path, armed: bool) -> Self {
+        Self {
+            path,
+            armed: std::cell::Cell::new(armed),
+        }
+    }
+
+    /// The swap has taken ownership of it; there is nothing left to clean.
+    fn release(&self) {
+        self.armed.set(false);
+    }
+}
+
+impl Drop for StagedPathGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed.get() {
+            // Declining an update must leave nothing behind — a stray
+            // `.name.staged-<uuid>` inside the library is picked up by the
+            // metadata rebuild scan as a skill of its own.
+            let _ = remove_path_if_exists(self.path);
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -35,6 +180,10 @@ pub struct BatchUpdateSkillsResult {
     pub refreshed: usize,
     pub unchanged: usize,
     pub failed: Vec<String>,
+    /// Skills left alone because updating would have removed files the new
+    /// version does not have. Named so the user can go and look, rather than
+    /// wondering why the badge did not clear.
+    pub held_back: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -295,11 +444,13 @@ pub async fn get_source_skill_document(
         )
         .map_err(AppError::git)?;
 
-        let temp_dir = git_fetcher::clone_repo_ref(
+        let temp_dir = git_fetcher::clone_repo_ref_scoped(
             &git_source.clone_url,
             git_source.branch.as_deref(),
+            git_source.subpath.as_deref(),
             None,
             proxy_url.as_deref(),
+            None,
         )
         .map_err(AppError::classify_git_error)?;
 
@@ -492,11 +643,13 @@ pub async fn get_skill_source_diff(
         )
         .map_err(AppError::git)?;
 
-        let temp_dir = git_fetcher::clone_repo_ref(
+        let temp_dir = git_fetcher::clone_repo_ref_scoped(
             &git_source.clone_url,
             git_source.branch.as_deref(),
+            git_source.subpath.as_deref(),
             None,
             proxy_url.as_deref(),
+            None,
         )
         .map_err(AppError::classify_git_error)?;
 
@@ -608,8 +761,10 @@ pub fn delete_managed_skills_by_ids(
 
             let targets = store.get_targets_for_skill(skill_id)?;
             for target in &targets {
-                let target_path = PathBuf::from(&target.target_path);
-                sync_engine::remove_target(&target_path).ok();
+                sync_engine::remove_recorded_target_or_warn(
+                    &PathBuf::from(&target.target_path),
+                    &target.mode,
+                );
             }
 
             let central = PathBuf::from(&skill.central_path);
@@ -658,6 +813,17 @@ fn log_update_outcome(
 ) {
     let mut draft = AuditDraft::new("update").detail(source_label);
     match outcome {
+        Ok(result) if !result.pending_removals.is_empty() => {
+            // Held back, not applied. Recording it as a successful "unchanged"
+            // would make the audit trail disagree with what actually happened.
+            draft = draft
+                .skill(result.skill.id.clone(), result.skill.name.clone())
+                .detail(format!(
+                    "{source_label}; held back — would remove {} path(s)",
+                    result.pending_removals.len()
+                ))
+                .ok();
+        }
         Ok(result) => {
             draft = draft
                 .skill(result.skill.id.clone(), result.skill.name.clone())
@@ -684,12 +850,23 @@ fn log_update_outcome(
 fn log_reimport_outcome(
     store: &SkillStore,
     skill_id: &str,
-    outcome: Result<&ManagedSkillDto, &AppError>,
+    outcome: Result<&ReimportSkillResult, &AppError>,
 ) {
     let mut draft = AuditDraft::new("update").detail("local");
     match outcome {
-        Ok(dto) => {
-            draft = draft.skill(dto.id.clone(), dto.name.clone()).ok();
+        Ok(result) if !result.pending_removals.is_empty() => {
+            draft = draft
+                .skill(result.skill.id.clone(), result.skill.name.clone())
+                .detail(format!(
+                    "local; held back — would remove {} path(s)",
+                    result.pending_removals.len()
+                ))
+                .ok();
+        }
+        Ok(result) => {
+            draft = draft
+                .skill(result.skill.id.clone(), result.skill.name.clone())
+                .ok();
         }
         Err(e) => {
             let name = store
@@ -787,9 +964,10 @@ pub async fn install_git(
                     )
                     .ok();
             });
-            let temp_dir = git_fetcher::clone_repo_ref_with_progress(
+            let temp_dir = git_fetcher::clone_repo_ref_scoped(
                 &parsed.clone_url,
                 parsed.branch.as_deref(),
+                parsed.subpath.as_deref(),
                 Some(&cancel),
                 proxy_url.as_deref(),
                 Some(progress_cb),
@@ -974,9 +1152,10 @@ pub async fn preview_git_install(
                 )
                 .ok();
         });
-        let temp_dir = git_fetcher::clone_repo_ref_with_progress(
+        let temp_dir = git_fetcher::clone_repo_ref_scoped(
             &parsed.clone_url,
             parsed.branch.as_deref(),
+            parsed.subpath.as_deref(),
             Some(&cancel),
             proxy_url.as_deref(),
             Some(progress_cb),
@@ -1342,9 +1521,16 @@ where
     results.into_inner().unwrap_or_default()
 }
 
+/// Update one skill.
+///
+/// `approved_removals` carries back `removal_approval` from a call that
+/// declined. The first call from the UI passes `None`; if it comes back with
+/// `pending_removals`, the user is shown exactly what would disappear and only
+/// then is it called again with that token.
 #[tauri::command]
 pub async fn update_skill(
     skill_id: String,
+    approved_removals: Option<String>,
     store: State<'_, Arc<SkillStore>>,
     cancel_registry: State<'_, Arc<InstallCancelRegistry>>,
 ) -> Result<UpdateSkillResult, AppError> {
@@ -1357,7 +1543,13 @@ pub async fn update_skill(
 
     tauri::async_runtime::spawn_blocking(move || {
         let outcome =
-            update_git_skill_internal(&store, &skill_id, proxy_url.as_deref(), Some(&cancel));
+            update_git_skill_internal(
+                &store,
+                &skill_id,
+                proxy_url.as_deref(),
+                Some(&cancel),
+                approved_removals.as_deref(),
+            );
         log_update_outcome(&store, &skill_id, "git", outcome.as_ref());
         outcome
     })
@@ -1367,11 +1559,13 @@ pub async fn update_skill(
 #[tauri::command]
 pub async fn reimport_local_skill(
     skill_id: String,
+    approved_removals: Option<String>,
     store: State<'_, Arc<SkillStore>>,
-) -> Result<ManagedSkillDto, AppError> {
+) -> Result<ReimportSkillResult, AppError> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let outcome = reimport_local_skill_internal(&store, &skill_id);
+        let outcome =
+            reimport_local_skill_internal(&store, &skill_id, approved_removals.as_deref());
         log_reimport_outcome(&store, &skill_id, outcome.as_ref());
         outcome
     })
@@ -1389,6 +1583,7 @@ pub async fn batch_update_skills(
         let mut refreshed = 0usize;
         let mut unchanged = 0usize;
         let mut failed = Vec::new();
+        let mut held_back = Vec::new();
 
         for skill_id in skill_ids {
             let skill = match store.get_skill_by_id(&skill_id).map_err(AppError::db)? {
@@ -1402,9 +1597,15 @@ pub async fn batch_update_skills(
             match skill.source_type.as_str() {
                 "git" | "skillssh" => {
                     let outcome =
-                        update_git_skill_internal(&store, &skill_id, proxy_url.as_deref(), None);
+                        update_git_skill_internal(&store, &skill_id, proxy_url.as_deref(), None, None);
                     log_update_outcome(&store, &skill_id, "git", outcome.as_ref());
                     match outcome {
+                        Ok(result) if !result.pending_removals.is_empty() => {
+                            // Held back rather than applied: it would have taken
+                            // away files the new version does not have, and a
+                            // batch has nobody to ask.
+                            held_back.push(skill.name.clone());
+                        }
                         Ok(result) => {
                             if result.content_changed {
                                 refreshed += 1;
@@ -1416,9 +1617,12 @@ pub async fn batch_update_skills(
                     }
                 }
                 "local" | "import" => {
-                    let outcome = reimport_local_skill_internal(&store, &skill_id);
+                    let outcome = reimport_local_skill_internal(&store, &skill_id, None);
                     log_reimport_outcome(&store, &skill_id, outcome.as_ref());
                     match outcome {
+                        Ok(result) if !result.pending_removals.is_empty() => {
+                            held_back.push(skill.name.clone());
+                        }
                         Ok(_) => refreshed += 1,
                         Err(err) => failed.push(format!("{}: {}", skill.name, err.message)),
                     }
@@ -1431,17 +1635,24 @@ pub async fn batch_update_skills(
             refreshed,
             unchanged,
             failed,
+            held_back,
         })
     })
     .await?
 }
 
 #[tauri::command]
+/// Re-point a local skill at a different source directory.
+///
+/// `approved_removals` behaves as on the update paths: choosing a new source is
+/// not a statement about discarding what the library has accumulated, so a
+/// replacement that would take files away stops and reports them first.
 pub async fn relink_local_skill_source(
     skill_id: String,
     source_path: String,
+    approved_removals: Option<String>,
     store: State<'_, Arc<SkillStore>>,
-) -> Result<ManagedSkillDto, AppError> {
+) -> Result<ReimportSkillResult, AppError> {
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let skill = store
@@ -1469,7 +1680,7 @@ pub async fn relink_local_skill_source(
             .update_skill_update_status(&skill_id, "updating")
             .map_err(AppError::db)?;
 
-        let result = (|| -> Result<(), AppError> {
+        let result = (|| -> Result<(Vec<PendingRemoval>, Option<String>), AppError> {
             let _lock = RepoLock::acquire_foreground("relink local skill").map_err(AppError::db)?;
             let staged_path = staged_path_for(&skill.central_path);
             let install_result = installer::install_from_local_to_destination(
@@ -1477,8 +1688,31 @@ pub async fn relink_local_skill_source(
                 Some(&skill.name),
                 &staged_path,
             )
+            .inspect_err(|_| {
+                let _ = remove_path_if_exists(&staged_path);
+            })
             .map_err(AppError::io)?;
+            let staged_guard = StagedPathGuard::new(&staged_path, true);
+
+            // Picking a new source says which source to follow. It does not say
+            // to discard whatever has accumulated in the library since — same
+            // replacement, same guard.
+            let pending = pending_removals_for(&store, &skill, Some(&staged_path))?;
+            let approval = removal_approval_token(&source_path, &pending);
+            if !pending.is_empty() && approved_removals.as_deref() != Some(approval.as_str()) {
+                // Put back exactly what was there. Hardcoding a status loses
+                // `source_missing` — the only state relink is reachable from —
+                // so declining would hide the Relink and Detach buttons on the
+                // next refresh, and `check_state` would also clear the recorded
+                // error and check time that nothing here has re-established.
+                store
+                    .update_skill_update_status(&skill.id, &skill.update_status)
+                    .map_err(AppError::db)?;
+                return Ok((pending, Some(approval)));
+            }
+
             swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+            staged_guard.release();
             store
                 .update_skill_after_reinstall(
                     &skill.id,
@@ -1497,11 +1731,15 @@ pub async fn relink_local_skill_source(
                 .map_err(AppError::db)?;
             resync_copy_targets(&store, &skill.id)?;
             sync_metadata::write_all_from_db_unlocked(&store).map_err(AppError::db)?;
-            Ok(())
+            Ok((Vec::new(), None))
         })();
 
         match result {
-            Ok(()) => managed_skill_by_id(&store, &skill_id),
+            Ok((pending_removals, removal_approval)) => Ok(ReimportSkillResult {
+                skill: managed_skill_by_id(&store, &skill_id)?,
+                pending_removals,
+                removal_approval,
+            }),
             Err(e) => {
                 let _ = store.update_skill_check_state(&skill_id, None, "error", Some(&e.message));
                 Err(e)
@@ -1625,11 +1863,22 @@ pub fn managed_skill_by_id(
     Ok(managed_skill_to_dto(store, skill, &all_targets, &tags_map))
 }
 
+/// Update an installed git-sourced skill.
+///
+/// `approved_removals` carries back the token from a previous call that
+/// declined, approving exactly the list it reported at exactly that revision.
+/// Without it — or with a stale one — an update that would take away files the
+/// new version does not have stops and reports them instead, having changed
+/// nothing. See [`crate::core::removals`].
+///
+/// Unattended callers pass `None` and simply do not update: nobody is there to
+/// be asked, and applying anyway is what #256 was.
 pub fn update_git_skill_internal(
     store: &SkillStore,
     skill_id: &str,
     proxy_url: Option<&str>,
     cancel: Option<&Arc<AtomicBool>>,
+    approved_removals: Option<&str>,
 ) -> Result<UpdateSkillResult, AppError> {
     let skill = store
         .get_skill_by_id(skill_id)
@@ -1664,14 +1913,16 @@ pub fn update_git_skill_internal(
         .update_skill_update_status(skill_id, "updating")
         .map_err(AppError::db)?;
 
-    let temp_dir = git_fetcher::clone_repo_ref(
+    let temp_dir = git_fetcher::clone_repo_ref_scoped(
         &git_source.clone_url,
         git_source.branch.as_deref(),
+        git_source.subpath.as_deref(),
         cancel,
         proxy_url,
+        None,
     )
     .map_err(AppError::classify_git_error)?;
-    let update_result = (|| -> Result<bool, AppError> {
+    let update_result = (|| -> Result<UpdateOutcome, AppError> {
         git_fetcher::checkout_revision(&temp_dir, &remote_revision).map_err(AppError::git)?;
         let skill_dir = resolve_skill_dir(
             &temp_dir,
@@ -1685,12 +1936,58 @@ pub fn update_git_skill_internal(
         let source_subpath = git_fetcher::relative_subpath(&temp_dir, &skill_dir);
         let _lock = RepoLock::acquire_foreground("update installed skill").map_err(AppError::db)?;
 
-        if content_changed {
-            let staged_path = staged_path_for(&skill.central_path);
-            let install_result =
+        // Stage first, then compare. The tree that lands in the library is the
+        // installer's output, not the raw checkout — it drops `.git` and every
+        // symlink — so comparing against the checkout would report a path as
+        // surviving that the swap then removes.
+        let staged_path = staged_path_for(&skill.central_path);
+        let install_result = if content_changed {
+            Some(
                 installer::install_skill_dir_to_destination(&skill_dir, &skill.name, &staged_path)
-                    .map_err(AppError::io)?;
+                    .inspect_err(|_| {
+                        let _ = remove_path_if_exists(&staged_path);
+                    })
+                    .map_err(AppError::io)?,
+            )
+        } else {
+            None
+        };
+        let staged_guard = StagedPathGuard::new(&staged_path, install_result.is_some());
+
+        let pending = pending_removals_for(store, &skill, install_result.is_some().then_some(staged_path.as_path()))?;
+
+        // A confirmation answers one exact question: this revision, this list
+        // as shown. It closes the window while the dialog is open — a push, or
+        // a file that changes the list, re-asks. Note a directory the new
+        // version drops is one entry, so a file created *inside* it afterwards
+        // does not change the list; approving `outputs/` approves the subtree. It cannot close the window
+        // between this scan and the removal itself: the repo lock holds off
+        // Skills Manager, not the agent processes writing into these very
+        // directories. Narrowing that further needs the directories frozen
+        // before the scan, not another scan.
+        let approval = removal_approval_token(&remote_revision, &pending);
+        if !pending.is_empty() && approved_removals != Some(approval.as_str()) {
+            // Declining is not a failure: nothing was touched and the update is
+            // still waiting. Clear the `updating` marker here, inside the lock,
+            // rather than after releasing it — doing it later lets a concurrent
+            // update overwrite the state, and swallowing the error would leave
+            // the skill showing "updating" forever.
+            store
+                .update_skill_check_state(
+                    &skill.id,
+                    Some(&remote_revision),
+                    "update_available",
+                    None,
+                )
+                .map_err(AppError::db)?;
+            return Ok(UpdateOutcome::Held { pending, approval });
+        }
+
+        if let Some(install_result) = install_result {
             swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+            // Only now is it the library's. Releasing before the swap left the
+            // staged directory behind whenever its first rename failed.
+            staged_guard.release();
 
             store
                 .update_skill_source_metadata(
@@ -1730,16 +2027,22 @@ pub fn update_git_skill_internal(
             resync_copy_targets(store, &skill.id)?;
             sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
         }
-        Ok(content_changed)
+        Ok(UpdateOutcome::Applied { content_changed })
     })();
     git_fetcher::cleanup_temp(&temp_dir);
 
     match update_result {
-        Ok(content_changed) => {
+        Ok(outcome) => {
+            let (content_changed, pending_removals, removal_approval) = match outcome {
+                UpdateOutcome::Applied { content_changed } => (content_changed, Vec::new(), None),
+                UpdateOutcome::Held { pending, approval } => (false, pending, Some(approval)),
+            };
             let skill = managed_skill_by_id(store, skill_id)?;
             Ok(UpdateSkillResult {
                 skill,
                 content_changed,
+                pending_removals,
+                removal_approval,
             })
         }
         Err(e) => {
@@ -1865,9 +2168,15 @@ pub fn set_git_source_internal(
         git_fetcher::resolve_remote_revision(&parsed.clone_url, branch.as_deref(), proxy_url)
             .map_err(|e| AppError::git(e.to_string()))?;
 
-    let temp_dir =
-        git_fetcher::clone_repo_ref(&parsed.clone_url, branch.as_deref(), None, proxy_url)
-            .map_err(AppError::classify_git_error)?;
+    let temp_dir = git_fetcher::clone_repo_ref_scoped(
+        &parsed.clone_url,
+        branch.as_deref(),
+        subpath.as_deref(),
+        None,
+        proxy_url,
+        None,
+    )
+    .map_err(AppError::classify_git_error)?;
 
     // Nothing before this point has written to the store, so a failure during
     // the network phase leaves no state to unwind — in particular the skill is
@@ -2004,10 +2313,16 @@ pub fn set_git_source_internal(
     }
 }
 
+/// Re-import a local skill from its recorded source path.
+///
+/// `approved_removals` mirrors the git path: without it — or with one that no
+/// longer matches the recomputed list — a re-import that would take away files
+/// the source does not have stops and reports them.
 pub fn reimport_local_skill_internal(
     store: &SkillStore,
     skill_id: &str,
-) -> Result<ManagedSkillDto, AppError> {
+    approved_removals: Option<&str>,
+) -> Result<ReimportSkillResult, AppError> {
     let skill = store
         .get_skill_by_id(skill_id)
         .map_err(AppError::db)?
@@ -2040,13 +2355,40 @@ pub fn reimport_local_skill_internal(
         .update_skill_update_status(skill_id, "updating")
         .map_err(AppError::db)?;
 
-    let result = (|| -> Result<(), AppError> {
+    let result = (|| -> Result<(Vec<PendingRemoval>, Option<String>), AppError> {
         let _lock = RepoLock::acquire_foreground("reimport local skill").map_err(AppError::db)?;
         let staged_path = staged_path_for(&skill.central_path);
         let install_result =
             installer::install_from_local_to_destination(&path, Some(&skill.name), &staged_path)
+                .inspect_err(|_| {
+                    let _ = remove_path_if_exists(&staged_path);
+                })
                 .map_err(AppError::io)?;
+        let staged_guard = StagedPathGuard::new(&staged_path, true);
+
+        // Same replacement, same guard. Re-importing is explicit about the
+        // *source*, not about discarding whatever has accumulated in the
+        // library since — and for a local skill the "update" button runs this,
+        // so leaving it uncovered would guard one path and not its twin.
+        let pending = pending_removals_for(store, &skill, Some(&staged_path))?;
+        // Bound to the set itself, not to a constant. A constant would match on
+        // the approving call no matter what the recomputed list said, so a file
+        // written while the dialog was open would be deleted having never been
+        // shown — which is the whole failure this is here to prevent.
+        let approval = removal_approval_token(REIMPORT_APPROVAL_DOMAIN, &pending);
+        if !pending.is_empty() && approved_removals != Some(approval.as_str()) {
+            // Restore the status this started from rather than asserting one:
+            // declining changed nothing, so nothing about the skill's state
+            // should read differently afterwards.
+            store
+                .update_skill_update_status(&skill.id, &skill.update_status)
+                .map_err(AppError::db)?;
+            return Ok((pending, Some(approval)));
+        }
+
         swap_skill_directory(&staged_path, Path::new(&skill.central_path))?;
+        // Only now is it the library's; before this the guard still owns it.
+        staged_guard.release();
         store
             .update_skill_after_install(
                 &skill.id,
@@ -2060,11 +2402,15 @@ pub fn reimport_local_skill_internal(
             .map_err(AppError::db)?;
         resync_copy_targets(store, &skill.id)?;
         sync_metadata::write_all_from_db_unlocked(store).map_err(AppError::db)?;
-        Ok(())
+        Ok((Vec::new(), None))
     })();
 
     match result {
-        Ok(()) => managed_skill_by_id(store, skill_id),
+        Ok((pending_removals, removal_approval)) => Ok(ReimportSkillResult {
+            skill: managed_skill_by_id(store, skill_id)?,
+            pending_removals,
+            removal_approval,
+        }),
         Err(e) => {
             let _ = store.update_skill_check_state(skill_id, None, "error", Some(&e.message));
             Err(e)
@@ -2275,13 +2621,7 @@ pub fn check_skill_update_internal_with_remote(
                         )
                     } else {
                         match installer::hash_local_source(source_path) {
-                            Ok(live_hash) => match skill.content_hash.as_deref() {
-                                Some(stored) if stored == live_hash.as_str() => {
-                                    ("up_to_date", None)
-                                }
-                                Some(_) => ("update_available", None),
-                                None => ("local_only", None),
-                            },
+                            Ok(live_hash) => local_source_status(&skill, source_path, &live_hash),
                             Err(err) => ("error", Some(err.to_string())),
                         }
                     }
@@ -2300,6 +2640,52 @@ pub fn check_skill_update_internal_with_remote(
     }
 
     managed_skill_by_id(store, skill_id)
+}
+
+/// Classify a `local`/`import` skill against its freshly hashed source.
+fn local_source_status(
+    skill: &SkillRecord,
+    source: &Path,
+    live_hash: &str,
+) -> (&'static str, Option<String>) {
+    match skill.content_hash.as_deref() {
+        None => ("local_only", None),
+        Some(stored) if stored == live_hash => ("up_to_date", None),
+        // The byte hashes disagree. Before offering an update, rule out the one
+        // difference that is not one — see [`differs_only_by_line_endings`].
+        Some(_) if differs_only_by_line_endings(source, Path::new(&skill.central_path)) => {
+            ("up_to_date", None)
+        }
+        Some(_) => ("update_available", None),
+    }
+}
+
+/// True when the original source and the library copy hold the same content in
+/// two line-ending encodings, and nothing else.
+///
+/// A `local`/`import` skill is checked by hashing the user's own source path,
+/// which is theirs to keep however they like — commonly a git working tree.
+/// Git for Windows defaults to `core.autocrlf=true`, so on a Windows + macOS
+/// pair the same checkout is CRLF on one machine and LF on the other while the
+/// library copy (our own byte copy, or a copy synced from the other machine)
+/// keeps the other encoding. Byte hashes then disagree forever and the skill
+/// sits at "update available"; re-importing rewrites the library in the local
+/// encoding, the other machine sees *its* copy drift, and the two devices push
+/// the same skill back and forth. Nothing changed, so nothing should be offered.
+///
+/// Deliberately compares the two live trees rather than the stored hash: the
+/// stored hash answers "what did we install?", and the question here is "do
+/// these two directories differ right now?". Any failure to read either side
+/// answers `false`, leaving the byte-hash verdict standing — this may only ever
+/// suppress a false update, never assert sameness it could not establish.
+fn differs_only_by_line_endings(source: &Path, central: &Path) -> bool {
+    let (Ok(source_hash), Ok(central_hash)) = (
+        installer::hash_local_source_eol_insensitive(source),
+        crate::core::content_hash::hash_directory_eol_insensitive(central),
+    ) else {
+        return false;
+    };
+    source_hash == central_hash
 }
 
 fn should_skip_update_check(
@@ -2949,13 +3335,16 @@ mod tests {
         let target_dir = repo._tmp.path().join("target-skill-one");
         fs::create_dir_all(&target_dir).unwrap();
         fs::write(target_dir.join("SKILL.md"), "# target").unwrap();
+        // A real directory pairs with a copy record; a symlink record over a
+        // real directory is the #435 data-loss shape and now preserves it
+        // (see deleting_a_skill_preserves_user_content_...).
         repo.store
             .insert_target(&SkillTargetRecord {
                 id: "target-1".to_string(),
                 skill_id: "skill-1".to_string(),
                 tool: "cursor".to_string(),
                 target_path: target_dir.to_string_lossy().to_string(),
-                mode: "symlink".to_string(),
+                mode: "copy".to_string(),
                 status: "ok".to_string(),
                 synced_at: Some(1),
                 last_error: None,
@@ -2990,6 +3379,205 @@ mod tests {
         assert!(sync_metadata::metadata_dir()
             .join("skills/skill-2.json")
             .exists());
+    }
+
+    /// The whole point of the preflight: it must see the user's file in the
+    /// library *and* the one in an agent's deployed copy, and say which is
+    /// which — a bare filename does not tell anyone where to go and rescue it.
+    #[test]
+    fn the_preflight_covers_the_library_and_every_deployed_copy() {
+        let repo = test_repo();
+        let central = write_skill_dir("ppt-master");
+        fs::create_dir_all(central.join("templates")).unwrap();
+        fs::write(central.join("templates/mine.pptx"), "user work").unwrap();
+        repo.store
+            .insert_skill(&sample_skill("skill-1", "ppt-master", &central))
+            .unwrap();
+
+        // A copy-mode deployment the user has also written into.
+        let target_dir = repo._tmp.path().join("agent/ppt-master");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("SKILL.md"), "x").unwrap();
+        fs::write(target_dir.join("notes.md"), "notes in the agent copy").unwrap();
+        repo.store
+            .insert_target(&SkillTargetRecord {
+                id: "t1".to_string(),
+                skill_id: "skill-1".to_string(),
+                tool: "claude_code".to_string(),
+                target_path: target_dir.to_string_lossy().to_string(),
+                mode: "copy".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(1),
+                last_error: None,
+                source_hash: None,
+            })
+            .unwrap();
+
+        // The new version carries only SKILL.md.
+        let staged = repo._tmp.path().join("staged");
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("SKILL.md"), "v2").unwrap();
+
+        let skill = repo.store.get_skill_by_id("skill-1").unwrap().unwrap();
+        let pending = pending_removals_for(&repo.store, &skill, Some(&staged)).unwrap();
+
+        let found: Vec<(String, String)> = pending
+            .iter()
+            .map(|p| (p.location.clone(), p.path.replace('\\', "/")))
+            .collect();
+        assert!(
+            found.contains(&(LIBRARY_LOCATION.to_string(), "templates/".to_string())),
+            "the library's own directory must be reported: {found:?}"
+        );
+        assert!(
+            found.contains(&("claude_code".to_string(), "notes.md".to_string())),
+            "the agent copy is torn down and rebuilt too: {found:?}"
+        );
+    }
+
+    /// With no content change nothing is swapped, so the library keeps what it
+    /// has — but the deployments are still rebuilt from it, which is its own way
+    /// to lose a file.
+    #[test]
+    fn a_metadata_only_update_still_checks_the_deployed_copies() {
+        let repo = test_repo();
+        let central = write_skill_dir("stable");
+        repo.store
+            .insert_skill(&sample_skill("skill-1", "stable", &central))
+            .unwrap();
+
+        let target_dir = repo._tmp.path().join("agent/stable");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("SKILL.md"), "x").unwrap();
+        fs::write(target_dir.join("mine.txt"), "only in the agent copy").unwrap();
+        repo.store
+            .insert_target(&SkillTargetRecord {
+                id: "t1".to_string(),
+                skill_id: "skill-1".to_string(),
+                tool: "cursor".to_string(),
+                target_path: target_dir.to_string_lossy().to_string(),
+                mode: "copy".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(1),
+                last_error: None,
+                source_hash: None,
+            })
+            .unwrap();
+
+        let skill = repo.store.get_skill_by_id("skill-1").unwrap().unwrap();
+        // `None` staged: the library is unchanged, and is itself the baseline.
+        let pending = pending_removals_for(&repo.store, &skill, None).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].location, "cursor");
+        assert_eq!(pending[0].path, "mine.txt");
+    }
+
+    /// Symlink-mode deployments are not copied over, so they are not at risk and
+    /// must not generate noise.
+    #[test]
+    fn symlink_deployments_are_not_reported() {
+        let repo = test_repo();
+        let central = write_skill_dir("linked");
+        repo.store
+            .insert_skill(&sample_skill("skill-1", "linked", &central))
+            .unwrap();
+
+        let target_dir = repo._tmp.path().join("agent/linked");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("whatever.md"), "x").unwrap();
+        repo.store
+            .insert_target(&SkillTargetRecord {
+                id: "t1".to_string(),
+                skill_id: "skill-1".to_string(),
+                tool: "grok".to_string(),
+                target_path: target_dir.to_string_lossy().to_string(),
+                mode: "symlink".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(1),
+                last_error: None,
+                source_hash: None,
+            })
+            .unwrap();
+
+        let skill = repo.store.get_skill_by_id("skill-1").unwrap().unwrap();
+        assert!(pending_removals_for(&repo.store, &skill, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    /// An approval answers one exact question: this revision, this list.
+    #[test]
+    fn an_approval_does_not_carry_to_a_different_revision_or_list() {
+        let a = vec![PendingRemoval {
+            location: LIBRARY_LOCATION.to_string(),
+            path: "templates/mine.pptx".to_string(),
+        }];
+        let mut b = a.clone();
+        b.push(PendingRemoval {
+            location: LIBRARY_LOCATION.to_string(),
+            path: "templates/another.pptx".to_string(),
+        });
+
+        assert_eq!(
+            removal_approval_token("rev1", &a),
+            removal_approval_token("rev1", &a),
+            "the same question must produce the same token"
+        );
+        assert_ne!(
+            removal_approval_token("rev1", &a),
+            removal_approval_token("rev2", &a),
+            "upstream moved on"
+        );
+        assert_ne!(
+            removal_approval_token("rev1", &a),
+            removal_approval_token("rev1", &b),
+            "the skill wrote another file while the dialog was open"
+        );
+    }
+
+    /// Drives the real `reimport_local_skill_internal`, because the bug this
+    /// guards against was in the wiring, not the hash: the approval was compared
+    /// against a constant, so the recomputed list was never consulted. A test
+    /// that only calls the token function twice passes either way.
+    #[test]
+    fn a_stale_reimport_approval_does_not_authorize_a_grown_list() {
+        let repo = test_repo();
+        let source = repo._tmp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), "---\nname: gen\n---\n").unwrap();
+
+        let central = write_skill_dir("gen");
+        fs::write(central.join("mine.txt"), "user work").unwrap();
+        let mut record = sample_skill("skill-1", "gen", &central);
+        record.source_ref = Some(source.to_string_lossy().to_string());
+        repo.store.insert_skill(&record).unwrap();
+
+        // First attempt: held, with a token for the list the user is shown.
+        let first = reimport_local_skill_internal(&repo.store, "skill-1", None).unwrap();
+        assert_eq!(first.pending_removals.len(), 1);
+        let shown = first.removal_approval.clone().unwrap();
+        assert!(central.join("mine.txt").is_file(), "nothing may be touched");
+
+        // The skill writes another file while the dialog is open.
+        fs::write(central.join("appeared-later.txt"), "also mine").unwrap();
+
+        // The old approval must not cover it.
+        let second =
+            reimport_local_skill_internal(&repo.store, "skill-1", Some(&shown)).unwrap();
+        assert_eq!(
+            second.pending_removals.len(),
+            2,
+            "the grown list must be shown again, not silently applied"
+        );
+        assert!(central.join("appeared-later.txt").is_file());
+        assert!(central.join("mine.txt").is_file());
+
+        // Approving the list actually shown does go through.
+        let approved = second.removal_approval.clone().unwrap();
+        let third =
+            reimport_local_skill_internal(&repo.store, "skill-1", Some(&approved)).unwrap();
+        assert!(third.pending_removals.is_empty());
+        assert!(!central.join("mine.txt").exists(), "the approved removal applies");
     }
 
     fn write_skill_at(root: &Path, rel: &str) -> PathBuf {
@@ -3271,6 +3859,87 @@ mod tests {
             "no revision from a stale remote"
         );
         assert_eq!(stored.last_checked_at, None, "the check did not complete");
+    }
+
+    /// Insert a `local` skill whose library copy is `central_body` and whose
+    /// original source path holds `source_body`, with the stored hash recorded
+    /// from the library copy exactly as an install would leave it.
+    fn insert_local_skill(repo: &TestRepo, id: &str, central_body: &str, source_body: &str) {
+        let central = central_repo::skills_dir().join(id);
+        fs::create_dir_all(&central).unwrap();
+        fs::write(central.join("SKILL.md"), central_body).unwrap();
+
+        let source = repo._tmp.path().join(format!("{id}-source"));
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("SKILL.md"), source_body).unwrap();
+
+        let mut skill = sample_skill(id, id, &central);
+        skill.source_type = "local".to_string();
+        skill.source_ref = Some(source.to_string_lossy().to_string());
+        skill.content_hash = Some(crate::core::content_hash::hash_directory(&central).unwrap());
+        skill.update_status = "unknown".to_string();
+        repo.store.insert_skill(&skill).unwrap();
+    }
+
+    /// Drives the real check, because the wiring is where this can go wrong:
+    /// the tiebreaker can be correct and still never be consulted. A Windows
+    /// checkout of the same skill is CRLF while the library copy synced from a
+    /// Mac is LF — byte hashes disagree, but there is no update to offer, and
+    /// offering one starts a re-import ping-pong between the two machines.
+    #[test]
+    fn a_local_source_that_differs_only_in_line_endings_is_up_to_date() {
+        let repo = test_repo();
+        insert_local_skill(
+            &repo,
+            "skill-1",
+            "---\nname: skill-1\n---\nbody\n",
+            "---\r\nname: skill-1\r\n---\r\nbody\r\n",
+        );
+
+        let dto =
+            check_skill_update_internal_with_remote(&repo.store, "skill-1", true, None).unwrap();
+
+        assert_eq!(dto.update_status, "up_to_date");
+    }
+
+    /// A vanished library copy still has an update to offer. This is a
+    /// regression guard on the end-to-end path, not proof of the empty-tree
+    /// guard itself — a non-empty source cannot collide with an empty library,
+    /// so what pins that collision is
+    /// `content_hash::tests::an_empty_or_missing_directory_has_no_tiebreaker_hash`.
+    #[test]
+    fn a_missing_library_copy_is_not_up_to_date() {
+        let repo = test_repo();
+        insert_local_skill(
+            &repo,
+            "skill-1",
+            "---\nname: skill-1\n---\nbody\n",
+            "---\r\nname: skill-1\r\n---\r\nbody\r\n",
+        );
+        fs::remove_dir_all(central_repo::skills_dir().join("skill-1")).unwrap();
+
+        let dto =
+            check_skill_update_internal_with_remote(&repo.store, "skill-1", true, None).unwrap();
+
+        assert_eq!(dto.update_status, "update_available");
+    }
+
+    /// The other half of the same wiring: the tiebreaker must not swallow a
+    /// real edit. Without this, "always up to date" would pass the test above.
+    #[test]
+    fn a_local_source_with_a_real_edit_still_reports_an_update() {
+        let repo = test_repo();
+        insert_local_skill(
+            &repo,
+            "skill-1",
+            "---\nname: skill-1\n---\nbody\n",
+            "---\r\nname: skill-1\r\n---\r\nbody, rewritten\r\n",
+        );
+
+        let dto =
+            check_skill_update_internal_with_remote(&repo.store, "skill-1", true, None).unwrap();
+
+        assert_eq!(dto.update_status, "update_available");
     }
 
     /// A remote that failed to resolve off the lock still has to land as an
@@ -3579,5 +4248,46 @@ mod tests {
 
         let err = resolve_skill_dir(tmp.path(), Some("gone"), Some("nope-not-here")).unwrap_err();
         assert!(err.message.contains("not found"), "{}", err.message);
+    }
+
+    /// #435: removing a library skill used to delete whatever sat at each
+    /// recorded target. A real directory that replaced our symlink is the
+    /// user's local fork — it must survive the removal.
+    #[test]
+    fn deleting_a_skill_preserves_user_content_that_replaced_a_recorded_link() {
+        let repo = test_repo();
+        let dir = write_skill_dir("my-skill");
+        repo.store
+            .insert_skill(&sample_skill("s1", "my-skill", &dir))
+            .unwrap();
+
+        let agent_tmp = tempdir().unwrap();
+        let target = agent_tmp.path().join("my-skill");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("mine.txt"), "DO_NOT_OVERWRITE").unwrap();
+        repo.store
+            .insert_target(&SkillTargetRecord {
+                id: "t1".to_string(),
+                skill_id: "s1".to_string(),
+                tool: "test_agent".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                mode: "symlink".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(1),
+                last_error: None,
+                source_hash: None,
+            })
+            .unwrap();
+
+        let result = delete_managed_skills_by_ids(&repo.store, &["s1".to_string()]).unwrap();
+
+        assert_eq!(result.deleted, 1);
+        assert!(result.failed.is_empty());
+        assert_eq!(
+            fs::read_to_string(target.join("mine.txt")).unwrap(),
+            "DO_NOT_OVERWRITE",
+            "the user's local fork must survive the skill removal"
+        );
+        assert!(repo.store.get_targets_for_skill("s1").unwrap().is_empty());
     }
 }

@@ -1671,6 +1671,17 @@ impl SkillStore {
         Ok(conn.execute("DELETE FROM suites WHERE id = ?1", params![suite_id])? > 0)
     }
 
+    /// Run a closure against the store's connection. For core modules whose
+    /// tables live in this database but whose logic is not part of SkillStore
+    /// (e.g. agent_definitions). Crate-internal only.
+    pub(crate) fn with_conn<T>(
+        &self,
+        f: impl FnOnce(&Connection) -> rusqlite::Result<T>,
+    ) -> rusqlite::Result<T> {
+        let conn = self.conn.lock().unwrap();
+        f(&conn)
+    }
+
     /// Append an audit entry to the permanent JSONL history and the SQLite
     /// read cache. Best-effort: errors are swallowed so callers never have to
     /// wrap or propagate them. Only the SQLite cache is pruned.

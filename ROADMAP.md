@@ -1,9 +1,9 @@
 # Agent Manager 开发计划（详细版）
 
-> 版本：v2.1（2026-09-28，随 REQUIREMENTS.md v2.1 同日重写，取代 2026-08-13 初版六阶段框架；旧框架内容已并入各批次）
+> 版本：v2.2（2026-09-29 更新：合并上游 v1.40.1〔99 提交〕——上游自带 zcode 适配器〔本地保留共享池增强〕与批量同步 UI〔本地保留服务端整批命令并接管其调用〕；subagent 管理随 M7 提前实现）
 > 分支纪律沿用：`main` 镜像上游，`skill-control` 为个人工作分支，每批次短特性分支 + 可逆提交，不建 PR
 > 工作量标记：S = 半天内，M = 1~2 天，L = 3 天以上（含调试与测试）
-> **全局前置事实**：`.cargo-target` 已删（越界清理事故），M1 起任何代码批次先付一次全量重编（约 1~2 小时，后台跑）；exe 现存 `D:\Projects\skill-control\skills-manager.exe`
+> 构建铁律：出 exe 必须走 `npm run skill-control:build`（裸 cargo build 的 exe 前端加载坏）；改前端后该命令会自动重跑 npm build
 
 ## 批次总览（顺序即依赖顺序）
 
@@ -127,7 +127,7 @@
 **验收**：全库报告产出；locked 项在重扫后不变；一条清理建议从建议到确认到执行全程留痕可回滚。
 **风险**：M；分级建议规则先简单（来源+重复），避免过度智能。
 
-## M7 机制扩展（skill 之外的资产）
+## M7 机制扩展（skill 之外的资产）◐ subagent 管理已实现（2026-09-29：v10 schema `agent_definitions`/`agent_definition_targets`，中央库 `agents/` 目录，Claude Code .md + Codex .toml + OpenCode .md 三端，导入收编/部署/取消部署/删除全带所有权保护与审计，新"子代理"页面含扫描收编）
 
 **目标**：从技能管理器长成 agent 扩展资产管理器。
 

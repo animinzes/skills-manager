@@ -15,6 +15,19 @@
     "addProject": "关联项目",
     "settings": "设置"
   },
+  "subagents": {
+    "title": "子代理",
+    "centralDir": "正本存于 D:\\\\SkillControl\\\\agents",
+    "scan": "扫描各 Agent 目录",
+    "library": "库中（{{count}}）",
+    "empty": "还没有登记任何子代理。扫描各 Agent 目录，把要管理的收编进来。",
+    "discovered": "在 Agent 目录中发现（{{count}} 个未登记）",
+    "scanHint": "扫描后会列出 Claude Code / Codex / OpenCode 目录里现存的子代理文件。",
+    "allTracked": "发现的所有文件都已登记。",
+    "adopt": "收编",
+    "adopted": "已收编 {{name}}",
+    "deleted": "已删除 {{name}}"
+  },
   "help": {
     "eyebrow": "操作指南",
     "title": "快速上手 Skills Manager",
@@ -79,6 +92,18 @@
     "scanImport": "扫描本地 Skills 导入",
     "installNew": "安装新 Skills",
     "recentActivity": "近期动态"
+  },
+  "agentControl": {
+    "title": "让你的 Agent 管理 Skills",
+    "body": "让 Claude Code、Codex 等直接替你安装和部署 Skill，来源与部署状态仍由 Skills Manager 记录。",
+    "cta": "去启用",
+    "pickAgents": "让哪些 Agent 可以这么做",
+    "confirm": "为 {{count}} 个启用",
+    "confirmEmpty": "选择 Agent",
+    "dismiss": "不再提示",
+    "done": "{{count}} 个 Agent 现在可以管理你的 Skill 了",
+    "errorNotFound": "管理 Skill 已安装，但在技能库里找不到它。",
+    "errorGeneric": "启用失败。"
   },
   "backup": {
     "title": "备份",
@@ -431,7 +456,7 @@
     "sourceType": "来源类型",
     "sourceRef": "来源位置",
     "sourceResolved": "解析后来源",
-    "sourceBranch": "分支",
+    "sourceBranch": "分支 / 标签",
     "sourceSubpath": "子路径",
     "sourceRevision": "版本",
     "docTabs": {
@@ -489,7 +514,10 @@
       "relinked": "已重新关联原路径",
       "detachSource": "转为本地副本",
       "detachedSource": "已取消原路径追踪",
-      "alreadyUpToDate": "Skill 内容未变化（版本已同步）"
+      "alreadyUpToDate": "Skill 内容未变化（版本已同步）",
+      "removalTitle": "这次更新会删除文件",
+      "removalMessage": "更新 {{name}} 会移除 {{count}} 个新版本里没有的文件。如果其中有你自己的东西，先把它移到 skill 文件夹以外——目前还没有任何改动。",
+      "removalConfirm": "仍然更新"
     },
     "gitConfigEntry": "同步配置",
     "filters": {
@@ -552,19 +580,16 @@
       "clickToRemove": "点击标记为移除",
       "undoRemove": "点击保留此标签"
     },
-    "batchDeploy": "部署到 Agent（{{count}}）",
-    "batchDeployDone": "已把 {{count}} 个技能部署到 {{agents}} 个 Agent",
-    "batchUndeployDone": "已从 {{agents}} 个 Agent 取消部署 {{count}} 个技能",
-    "batchDeployDialog": {
-      "title": "批量部署（{{count}} 个技能）",
-      "mode": {
-        "add": "部署",
-        "remove": "取消部署"
-      },
-      "noAgents": "没有可用的 Agent。",
-      "hint": "按单个计划批量执行：任一目标存在非本应用管理的内容时，整批拒绝执行，不会做一半。",
-      "addConfirm": "部署 {{count}} 个 → {{agents}} 个 Agent",
-      "removeConfirm": "从 {{agents}} 个 Agent 取消 {{count}} 个"
+    "batchHeldBack": "有 {{count}} 个 skill 未更新——更新会删除文件（{{names}}）。逐个更新可以看到具体是哪些。",
+    "batchSyncAgents": "同步到 Agent ({{count}})",
+    "batchSynced": "已同步 {{count}} 项到 Agent",
+    "batchSyncFailed": "{{count}} 项同步失败",
+    "batchSyncDialog": {
+      "title": "把 {{count}} 个 Skill 同步到 Agent",
+      "description": "勾选目标 Agent，只会补齐尚未同步的 Skill。取消同步请在卡片的 Agent 图标上单独操作。",
+      "apply": "同步 {{count}} 项",
+      "noAgents": "没有已安装并启用的 Agent。",
+      "allSynced": "选中的 Skill 都已同步到这个 Agent"
     }
   },
   "install": {
@@ -724,6 +749,7 @@
     "repoPathEmpty": "请先填写中央仓库路径",
     "repoPathDefaultHint": "当前使用默认中央仓库路径",
     "repoPathCustomHint": "当前使用自定义中央仓库路径",
+    "repoPathPendingHint": "重启应用后会把技能库迁移到 {{path}}；在此之前仍使用当前位置。",
     "changeDir": "更改目录",
     "openInFinder": "打开文件夹",
     "syncMode": "默认同步模式",
@@ -747,7 +773,7 @@
     "help": "帮助",
     "website": "官网",
     "about": "关于",
-    "version": "Skills Manager 1.33.1",
+    "version": "Skills Manager 1.40.1",
     "tagline": "跨平台。极简、高效、无感多 Preset 切换。",
     "checkUpdate": "检查更新",
     "checking": "检查中…",
@@ -921,6 +947,10 @@
     "noTargetSelected": "未选择",
     "changeTarget": "更换目标",
     "selectAllTargets": "全选",
+    "selectAllSkills": "全选技能",
+    "deselectAllSkills": "取消全选",
+    "selectedCount": "已选 {{count}} 个",
+    "shiftHint": "按住 Shift 点击可批量选择",
     "clearTargets": "清空",
     "searchPlaceholder": "搜索技能库…",
     "emptyLibrary": "技能库为空",
@@ -1015,6 +1045,8 @@
     "importToCenterSuccess": "\"{{name}}\" 已更新到 Skills 中心",
     "importFromCenterSuccess": "\"{{name}}\" 已添加到项目的 {{count}} 个 Agent",
     "updateCenterSuccess": "\"{{name}}\" 已更新到 Skills 中心",
+    "updateCenterConflict": "\"{{name}}\"：{{count}} 个变体可能各有独有内容——请先整理成一份再更新中心。本次未做任何写入。",
+    "updateCenterAlignFailed": "\"{{name}}\"：已推送到中心，但 {{count}} 个变体对齐失败",
     "updateProjectSuccess": "\"{{name}}\" 已更新到项目",
     "resetFromCenter": "恢复中心版本",
     "resetFromCenterSuccess": "\"{{name}}\" 已恢复为中心版本",
@@ -1087,12 +1119,14 @@
     "batchUpdateProject": "更新项目 ({{count}})",
     "batchUpdatedCenter": "已更新 {{count}} 个 Skill 到 Skills 中心",
     "batchUpdatedProject": "已更新项目中的 {{count}} 个 Skill",
-    "batchUpdateCenterFailed": "{{count}} 个 Skill 更新到 Skills 中心失败",
+    "batchUpdateCenterFailed": "{{count}} 个 Skill 未能完成到 Skills 中心的更新",
+    "batchUpdateCenterConflict": "{{count}} 个 Skill 有多个变体可能各有独有内容，未做处理",
     "batchUpdateProjectFailed": "{{count}} 个 Skill 更新到项目失败",
     "skillDirectoryNotFound": "未找到 Skill 目录",
     "batchEditTags": "标签 ({{count}})",
     "batchTagsUpdated": "已更新 {{count}} 个中心 Skill 的标签",
-    "batchTagsFailed": "{{count}} 个中心 Skill 标签更新失败"
+    "batchTagsFailed": "{{count}} 个中心 Skill 标签更新失败",
+    "batchTagScopeNote": "标签保存在中央技能库里，改动会影响所有使用这个 Skill 的项目。只属于本项目的本地 Skill 不会被修改。"
   },
   "presetActions": {
     "button": "应用 Preset",
@@ -1188,7 +1222,11 @@
         "localNewer": "本地有变更",
         "centerNewer": "中心有变更",
         "diverged": "冲突"
-      }
+      },
+      "deleteLocalSelected": "永久删除 {{count}} 个",
+      "deleteLocalBatchConfirm": "永久删除 {{agent}} 里的 {{count}} 个本地 Skill？这些 Skill 只存在于该 Agent 目录，删除后无法恢复。",
+      "deletedLocalBatch": "已删除 {{count}} 个本地 Skill",
+      "deleteLocalBatchFailed": "{{count}} 个本地 Skill 删除失败"
     }
   }
 }

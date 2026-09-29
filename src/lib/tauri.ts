@@ -442,25 +442,66 @@ export interface UpdateSkillResult {
   skill: ManagedSkill;
   /** False when a monorepo commit didn't touch this skill's subdirectory. */
   content_changed: boolean;
+  /**
+   * What the update would remove. Non-empty means **nothing was changed** —
+   * show these and call again with `removal_approval` if the user accepts.
+   */
+  pending_removals: PendingRemoval[];
+  /**
+   * Identifies exactly what `pending_removals` describes. Passing it back
+   * approves that list at that revision and nothing else.
+   */
+  removal_approval: string | null;
 }
 
-export const updateSkill = (skillId: string) =>
-  invoke<UpdateSkillResult>("update_skill", { skillId });
+export interface PendingRemoval {
+  /** `"library"`, or the agent key whose deployed copy holds it. */
+  location: string;
+  path: string;
+}
+
+/** `approvedRemovals` carries back `removal_approval` from a declined call. */
+export const updateSkill = (skillId: string, approvedRemovals?: string | null) =>
+  invoke<UpdateSkillResult>("update_skill", {
+    skillId,
+    approvedRemovals: approvedRemovals ?? null,
+  });
 
 export interface BatchUpdateSkillsResult {
   refreshed: number;
   unchanged: number;
+  /** Skills left alone because updating would have removed files. */
+  held_back: string[];
   failed: string[];
 }
 
 export const batchUpdateSkills = (skillIds: string[]) =>
   invoke<BatchUpdateSkillsResult>("batch_update_skills", { skillIds });
 
-export const reimportLocalSkill = (skillId: string) =>
-  invoke<ManagedSkill>("reimport_local_skill", { skillId });
+export interface ReimportSkillResult {
+  skill: ManagedSkill;
+  /** Non-empty means nothing was changed — see UpdateSkillResult. */
+  pending_removals: PendingRemoval[];
+  /** Approves exactly `pending_removals` — see UpdateSkillResult. */
+  removal_approval: string | null;
+}
 
-export const relinkLocalSkillSource = (skillId: string, sourcePath: string) =>
-  invoke<ManagedSkill>("relink_local_skill_source", { skillId, sourcePath });
+export const reimportLocalSkill = (skillId: string, approvedRemovals?: string | null) =>
+  invoke<ReimportSkillResult>("reimport_local_skill", {
+    skillId,
+    approvedRemovals: approvedRemovals ?? null,
+  });
+
+export const relinkLocalSkillSource = (
+  skillId: string,
+  sourcePath: string,
+  approvedRemovals?: string | null,
+) =>
+  invoke<ReimportSkillResult>("relink_local_skill_source", {
+    skillId,
+    sourcePath,
+    approvedRemovals: approvedRemovals ?? null,
+  });
 
 export const detachLocalSkillSource = (skillId: string) =>
   invoke<ManagedSkill>("detach_local_skill_source", { skillId });
@@ -528,6 +569,70 @@ export const applySkillsToAgents = (
 ) =>
   invoke<void>("apply_skills_to_agents", { skillIds, toolKeys, mode });
 
+// ── Subagent definitions ──
+
+export interface AgentDefinitionRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  format: string;
+  source_type: string;
+  source_ref: string | null;
+  central_path: string;
+  content_hash: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface AgentDefinitionTarget {
+  tool: string;
+  target_path: string;
+  mode: string;
+  synced_hash: string | null;
+  synced_at: number;
+}
+
+export interface SubagentAdapterInfo {
+  tool_key: string;
+  display_name: string;
+  format: string;
+  dir: string;
+  installed: boolean;
+}
+
+export interface DiscoveredDefinition {
+  tool: string;
+  display_name: string;
+  path: string;
+  file_name: string;
+  format: string;
+  already_tracked: boolean;
+}
+
+export const getAgentDefinitions = () =>
+  invoke<AgentDefinitionRecord[]>("get_agent_definitions");
+
+export const getAgentDefinitionTargets = (definitionId: string) =>
+  invoke<AgentDefinitionTarget[]>("get_agent_definition_targets", { definitionId });
+
+export const getAgentDefinitionAdapters = () =>
+  invoke<SubagentAdapterInfo[]>("get_agent_definition_adapters");
+
+export const scanAgentDefinitions = () =>
+  invoke<DiscoveredDefinition[]>("scan_agent_definitions");
+
+export const importAgentDefinition = (sourcePath: string, format: string) =>
+  invoke<AgentDefinitionRecord>("import_agent_definition", { sourcePath, format });
+
+export const deployAgentDefinition = (definitionId: string, tool: string) =>
+  invoke<void>("deploy_agent_definition", { definitionId, tool });
+
+export const undeployAgentDefinition = (definitionId: string, tool: string) =>
+  invoke<void>("undeploy_agent_definition", { definitionId, tool });
+
+export const deleteAgentDefinition = (definitionId: string) =>
+  invoke<void>("delete_agent_definition", { definitionId });
+
 // ── Scan ──
 
 export const scanLocalSkills = () => invoke<ScanResult>("scan_local_skills");
@@ -562,6 +667,9 @@ export const getCentralRepoPath = () =>
 
 export const getCentralRepoPathOverride = () =>
   invoke<string | null>("get_central_repo_path_override");
+
+export const getCentralRepoPendingPath = () =>
+  invoke<string | null>("get_central_repo_pending_path");
 
 export const getCentralRepoWarnings = () =>
   invoke<string[]>("get_central_repo_warnings");

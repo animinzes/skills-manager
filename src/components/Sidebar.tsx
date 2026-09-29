@@ -17,6 +17,7 @@ import {
   Database,
   ChevronDown,
   ChevronRight,
+  Users,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -169,6 +170,7 @@ export function Sidebar() {
     { name: t("sidebar.dashboard"), path: "/", icon: LayoutDashboard },
     { name: t("sidebar.mySkills"), path: "/my-skills", icon: Layers },
     { name: t("registry.title"), path: "/registry", icon: Database },
+    { name: t("subagents.title"), path: "/subagents", icon: Users },
     { name: t("sidebar.installSkills"), path: "/install", icon: Download },
     { name: t("sidebar.backup"), path: "/backup", icon: CloudUpload },
   ];

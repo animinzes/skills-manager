@@ -409,14 +409,14 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
         ToolAdapter {
             key: "kimi".into(),
             display_name: "Kimi Code CLI".into(),
-            relative_skills_dir: ".config/agents/skills".into(),
-            relative_detect_dir: ".kimi".into(),
+            relative_skills_dir: ".kimi-code/skills".into(),
+            relative_detect_dir: ".kimi-code".into(),
             additional_scan_dirs: vec![],
             override_skills_dir: None,
             category: ToolCategory::Coding,
             is_custom: false,
             recursive_scan: false,
-            project_relative_skills_dir: None,
+            project_relative_skills_dir: Some(".kimi-code/skills".into()),
         },
         ToolAdapter {
             key: "replit".into(),
@@ -806,6 +806,74 @@ pub fn default_tool_adapters() -> Vec<ToolAdapter> {
             recursive_scan: false,
             project_relative_skills_dir: None,
         },
+        ToolAdapter {
+            // DeepSeek Harness resolves its home as `$DSH_HOME` or `~/.dsh`
+            // (`packages/util/home-paths/src/index.ts`) and scans `skills`
+            // beneath it, so the deploy target is `~/.dsh/skills`.
+            //
+            // It also reads the shared `~/.agents/skills` root (`$DSH_AGENTS_HOME`
+            // or `~/.agents`) — discovery only, like Codex and Copilot, so a
+            // deployment lands in its own directory and cannot be mistaken for
+            // another agent's.
+            //
+            // Project roots are `<project>/.dsh/skills` and
+            // `<project>/.agents/skills`; the former is the higher-ranked of the
+            // two and matches the global path, so no project override is needed.
+            // Verified against `packages/skill/skill-filesystem/src/index.ts`
+            // rather than the README alone.
+            key: "deepseek_harness".into(),
+            display_name: "DeepSeek Harness".into(),
+            relative_skills_dir: ".dsh/skills".into(),
+            relative_detect_dir: ".dsh".into(),
+            additional_scan_dirs: vec![".agents/skills".into()],
+            override_skills_dir: None,
+            category: ToolCategory::Coding,
+            is_custom: false,
+            recursive_scan: false,
+            project_relative_skills_dir: None,
+        },
+        ToolAdapter {
+            // The GitLab Duo CLI (launched as `glab duo cli`) resolves its
+            // config home to `%APPDATA%\GitLab\duo` on Windows,
+            // `$GLAB_CONFIG_DIR` or `$XDG_CONFIG_HOME/gitlab/duo` when either
+            // is set (GLAB_CONFIG_DIR wins), and `~/.gitlab/duo` otherwise --
+            // then scans `skills` beneath it.
+            //
+            // Adapters resolve paths from the home directory and read no env
+            // vars, so `~/.gitlab/duo/skills` is right on Linux and macOS at
+            // their defaults and nowhere else. THREE cases need a manual path
+            // override, Windows included: there the real location is
+            // `%APPDATA%\GitLab\duo`, not `%USERPROFILE%\.gitlab\duo`, so
+            // `is_installed()` finds nothing and Duo shows as not installed.
+            // Covering that properly needs per-platform adapter paths, which
+            // no adapter has today -- tracked separately, do not bolt a
+            // GitLab-shaped special case into `candidate_paths`.
+            //
+            // Duo also reads the shared `~/.agents/skills` root -- the location
+            // `glab skills install --global` writes to. Discovery only, like
+            // Codex and Copilot, so a deployment lands in Duo's own directory
+            // and cannot be mistaken for another agent's. This one *is* right
+            // on all three platforms: the shared root is `%USERPROFILE%\.agents\skills`
+            // on Windows, which is what resolving from the home dir already gives.
+            //
+            // Its project-level roots are `<repo>/.agents/skills` and
+            // `<repo>/skills`. The bare `skills` variant would claim any
+            // unrelated directory of that name in a workspace, so the project
+            // target is the spec-compliant `.agents/skills`.
+            //
+            // Paths verified by reading the `AgentSkillsResolver` in the
+            // bundled Duo CLI binary, not the documentation.
+            key: "gitlab_duo".into(),
+            display_name: "GitLab Duo".into(),
+            relative_skills_dir: ".gitlab/duo/skills".into(),
+            relative_detect_dir: ".gitlab/duo".into(),
+            additional_scan_dirs: vec![".agents/skills".into()],
+            override_skills_dir: None,
+            category: ToolCategory::Coding,
+            is_custom: false,
+            recursive_scan: false,
+            project_relative_skills_dir: Some(".agents/skills".into()),
+        },
     ]
 }
 
@@ -1048,6 +1116,56 @@ mod tests {
         assert_eq!(found.project_relative_skills_dir(), ".omp/skills");
     }
 
+    /// Paths verified against the harness source rather than its README:
+    /// `packages/util/home-paths/src/index.ts` for the home, and
+    /// `packages/skill/skill-filesystem/src/index.ts` for the root list.
+    #[test]
+    fn deepseek_harness_deploys_to_its_own_home_and_discovers_the_shared_root() {
+        let adapter = default_tool_adapters()
+            .into_iter()
+            .find(|adapter| adapter.key == "deepseek_harness")
+            .expect("deepseek_harness adapter should exist");
+
+        assert_eq!(adapter.relative_skills_dir, ".dsh/skills");
+        assert_eq!(adapter.relative_detect_dir, ".dsh");
+        // The project root it ranks highest is `<project>/.dsh/skills`, which
+        // matches the global path, so it needs no override.
+        assert_eq!(adapter.project_relative_skills_dir(), ".dsh/skills");
+        // Shared root: discovery only, never a deploy target.
+        assert!(adapter
+            .additional_scan_dirs
+            .contains(&".agents/skills".to_string()));
+        assert!(!adapter.is_custom);
+        assert_eq!(adapter.category, ToolCategory::Coding);
+    }
+
+    /// Paths verified against the `AgentSkillsResolver` in the bundled Duo CLI
+    /// binary rather than the GitLab docs: the config home is
+    /// `$XDG_CONFIG_HOME/gitlab/duo` or `~/.gitlab/duo`, global skills sit in
+    /// `skills` beneath it, and `~/.agents/skills` is a second global root.
+    #[test]
+    fn gitlab_duo_deploys_to_its_config_home_and_discovers_the_shared_root() {
+        let adapter = default_tool_adapters()
+            .into_iter()
+            .find(|adapter| adapter.key == "gitlab_duo")
+            .expect("gitlab_duo adapter should exist");
+
+        assert_eq!(adapter.display_name, "GitLab Duo");
+        assert_eq!(adapter.relative_skills_dir, ".gitlab/duo/skills");
+        assert_eq!(adapter.relative_detect_dir, ".gitlab/duo");
+        // Duo's other project root is a bare `<repo>/skills`, which would claim
+        // any unrelated directory of that name, so the project target is the
+        // spec-compliant one and differs from the global path.
+        assert_eq!(adapter.project_relative_skills_dir(), ".agents/skills");
+        // Shared root: discovery only, never a deploy target.
+        assert!(adapter
+            .additional_scan_dirs
+            .contains(&".agents/skills".to_string()));
+        assert_eq!(adapter.category, ToolCategory::Coding);
+        assert!(!adapter.is_custom);
+        assert!(!adapter.recursive_scan);
+    }
+
     #[test]
     fn opencode_uses_distinct_project_and_global_skill_paths() {
         let adapter = default_tool_adapters()
@@ -1062,7 +1180,7 @@ mod tests {
     }
 
     #[test]
-    fn zcode_scans_shared_pool_but_deploys_to_own_dir() {
+    fn zcode_uses_expected_default_paths() {
         let adapter = default_tool_adapters()
             .into_iter()
             .find(|adapter| adapter.key == "zcode")
@@ -1071,10 +1189,12 @@ mod tests {
         assert_eq!(adapter.display_name, "ZCode");
         assert_eq!(adapter.relative_skills_dir, ".zcode/skills");
         assert_eq!(adapter.relative_detect_dir, ".zcode");
-        // The shared pool is discovery-only, matching the Codex adapter's use.
-        assert_eq!(adapter.additional_scan_dirs, vec![".agents/skills"]);
+        assert_eq!(adapter.project_relative_skills_dir(), ".zcode/skills");
         assert_eq!(adapter.category, ToolCategory::Coding);
         assert!(!adapter.is_custom);
         assert!(!adapter.recursive_scan);
+        // Local fork: the shared pool is discovery-only, matching the Codex
+        // adapter's use.
+        assert_eq!(adapter.additional_scan_dirs, vec![".agents/skills"]);
     }
 }

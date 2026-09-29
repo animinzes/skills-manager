@@ -387,6 +387,9 @@ struct RepoStatus {
     skill_count: usize,
     preset_count: usize,
     active_preset_id: Option<String>,
+    /// Set while a move to another location waits for the app to restart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending_base_dir: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -528,6 +531,13 @@ struct UpdateReport {
     source_type: String,
     refreshed: bool,
     error: Option<String>,
+    /// Present when the update was held back because it would have removed
+    /// these paths (#256). Nothing changed, and the CLI offers no way to
+    /// accept: approving means seeing the list, which needs a person, so it
+    /// only exists in the app. A bare `refreshed: false` would read as
+    /// "already up to date".
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    held_back_removals: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -671,14 +681,7 @@ fn main() {
 
     if let Err(err) = run(cli) {
         if json {
-            let message = format!("{err:#}");
-            let envelope = serde_json::json!({
-                "ok": false,
-                "code": "COMMAND_FAILED",
-                "message": message,
-                "error": message,
-            });
-            eprintln!("{}", serde_json::to_string(&envelope).unwrap());
+            eprintln!("{}", serde_json::to_string(&error_envelope(&err)).unwrap());
         } else {
             eprintln!("error: {err:#}");
         }
@@ -687,6 +690,25 @@ fn main() {
 }
 
 fn run(cli: Cli) -> anyhow::Result<()> {
+    if let Commands::Repo(RepoArgs {
+        command: command @ (RepoCommand::SetPath { .. } | RepoCommand::ResetPath),
+    }) = &cli.command
+    {
+        // `--skills-root` points this run at an external checkout; recording
+        // that as the app library's move source would move the wrong thing.
+        if cli.skills_root.is_some() {
+            anyhow::bail!("repo set-path / reset-path cannot be combined with --skills-root");
+        }
+        let path = match command {
+            RepoCommand::SetPath { path } => Some(path.clone()),
+            _ => None,
+        };
+        central_repo::set_base_dir_override(path)?;
+        let store = app_state::initialize_cli_store_moving_repo()?;
+        print_json(&repo_status(&store), cli.json);
+        return Ok(());
+    }
+
     if let Some(skills_root) = &cli.skills_root {
         let base = central_repo::external_base_dir(skills_root);
         central_repo::set_runtime_base_dir_override(Some(base));
@@ -709,15 +731,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
 fn run_repo(args: RepoArgs, store: &SkillStore, json: bool) -> anyhow::Result<()> {
     match args.command {
         RepoCommand::Status => print_json(&repo_status(store), json),
-        RepoCommand::SetPath { path } => {
-            central_repo::set_base_dir_override(Some(path))?;
-            let store = app_state::initialize_cli_store()?;
-            print_json(&repo_status(&store), json);
-        }
-        RepoCommand::ResetPath => {
-            central_repo::set_base_dir_override(None)?;
-            let store = app_state::initialize_cli_store()?;
-            print_json(&repo_status(&store), json);
+        RepoCommand::SetPath { .. } | RepoCommand::ResetPath => {
+            unreachable!("handled in run() before the store is opened")
         }
     }
     Ok(())
@@ -732,6 +747,8 @@ fn repo_status(store: &SkillStore) -> RepoStatus {
         skill_count: store.get_all_skills().unwrap_or_default().len(),
         preset_count: store.get_all_scenarios().unwrap_or_default().len(),
         active_preset_id: store.get_active_scenario_id().unwrap_or(None),
+        pending_base_dir: central_repo::pending_base_dir()
+            .map(|path| path.to_string_lossy().to_string()),
     }
 }
 
@@ -1196,7 +1213,10 @@ fn run_skill_deployment(
     let changed_pairs = changed.len();
 
     let mut preserved: Vec<String> = Vec::new();
-    if !dry_run {
+    if dry_run && deploy {
+        scenario_service::preflight_add_skills_to_tools(store, &skill_ids, &agent_keys)
+            .map_err(map_app_err)?;
+    } else if !dry_run {
         scenario_service::apply_skills_to_tools(
             store,
             &skill_ids,
@@ -1559,11 +1579,13 @@ fn install_git_action(
     let proxy_url = store.proxy_url();
     let parsed = git_fetcher::parse_git_source_resolved(repo_url, proxy_url.as_deref());
     let cancel = Arc::new(AtomicBool::new(false));
-    let temp_dir = git_fetcher::clone_repo_ref(
+    let temp_dir = git_fetcher::clone_repo_ref_scoped(
         &parsed.clone_url,
         parsed.branch.as_deref(),
+        parsed.subpath.as_deref(),
         Some(&cancel),
         proxy_url.as_deref(),
+        None,
     )?;
     let result = (|| -> anyhow::Result<(String, String, String)> {
         let _lock = RepoLock::acquire_foreground("cli install git")?;
@@ -1684,13 +1706,18 @@ fn run_update(
     for skill in targets {
         let report = match skill.source_type.as_str() {
             "git" | "skillssh" => {
-                match cmd::update_git_skill_internal(store, &skill.id, proxy_url.as_deref(), None) {
+                match cmd::update_git_skill_internal(store, &skill.id, proxy_url.as_deref(), None, None) {
                     Ok(r) => UpdateReport {
                         skill_id: skill.id.clone(),
                         name: skill.name.clone(),
                         source_type: skill.source_type.clone(),
                         refreshed: r.content_changed,
                         error: None,
+                        held_back_removals: r
+                            .pending_removals
+                            .iter()
+                            .map(|p| format!("{}: {}", p.location, p.path))
+                            .collect(),
                     },
                     Err(e) => UpdateReport {
                         skill_id: skill.id.clone(),
@@ -1698,16 +1725,22 @@ fn run_update(
                         source_type: skill.source_type.clone(),
                         refreshed: false,
                         error: Some(e.message.clone()),
+                        held_back_removals: Vec::new(),
                     },
                 }
             }
-            "local" | "import" => match cmd::reimport_local_skill_internal(store, &skill.id) {
-                Ok(_) => UpdateReport {
+            "local" | "import" => match cmd::reimport_local_skill_internal(store, &skill.id, None) {
+                Ok(r) => UpdateReport {
                     skill_id: skill.id.clone(),
                     name: skill.name.clone(),
                     source_type: skill.source_type.clone(),
-                    refreshed: true,
+                    refreshed: r.pending_removals.is_empty(),
                     error: None,
+                    held_back_removals: r
+                        .pending_removals
+                        .iter()
+                        .map(|p| format!("{}: {}", p.location, p.path))
+                        .collect(),
                 },
                 Err(e) => UpdateReport {
                     skill_id: skill.id.clone(),
@@ -1715,6 +1748,7 @@ fn run_update(
                     source_type: skill.source_type.clone(),
                     refreshed: false,
                     error: Some(e.message.clone()),
+                    held_back_removals: Vec::new(),
                 },
             },
             other => UpdateReport {
@@ -1723,6 +1757,7 @@ fn run_update(
                 source_type: skill.source_type.clone(),
                 refreshed: false,
                 error: Some(format!("source type '{other}' cannot be refreshed")),
+                held_back_removals: Vec::new(),
             },
         };
         reports.push(report);
@@ -1921,6 +1956,13 @@ fn run_sync(
     };
 
     if dry_run {
+        let desired = scenario_service::collect_scenario_sync_targets(store, &preset.id)
+            .map_err(map_app_err)?;
+        let desired: Vec<_> = desired
+            .into_iter()
+            .filter(|target| tool_key.is_none_or(|tool| target.tool == tool))
+            .collect();
+        scenario_service::preflight_scenario_sync_targets(store, &desired).map_err(map_app_err)?;
         return Ok(SyncReport {
             ok: true,
             preset_id: preset.id,
@@ -2767,7 +2809,10 @@ fn run_preset_deployment(
     let changed_pairs = changed.len();
 
     let mut preserved: Vec<String> = Vec::new();
-    if !dry_run {
+    if dry_run && deploy {
+        scenario_service::preflight_add_skills_to_tools(store, &skill_ids, &agent_keys)
+            .map_err(map_app_err)?;
+    } else if !dry_run {
         scenario_service::apply_skills_to_tools(
             store,
             &skill_ids,
@@ -2982,8 +3027,44 @@ fn run_git(
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
+/// Keep the `AppError` itself in the chain rather than only its sentence:
+/// `main` downcasts it to emit a machine-readable JSON envelope for the kinds
+/// that carry details (a deployment refusal names the paths in the way).
+/// The `--json` failure envelope.
+///
+/// Most failures are one sentence and `COMMAND_FAILED`. A few carry specifics
+/// the caller has to act on rather than repeat — a deployment refusal names
+/// the paths in the way — and those pass their structure straight through, so
+/// an agent can say which directory is blocking and offer the way out (#363).
+fn error_envelope(err: &anyhow::Error) -> serde_json::Value {
+    let message = format!("{err:#}");
+    match err.downcast_ref::<AppError>() {
+        Some(app_err) if app_err.details.is_some() => {
+            let mut value = serde_json::to_value(app_err).unwrap();
+            let object = value.as_object_mut().unwrap();
+            object.insert("ok".into(), serde_json::Value::Bool(false));
+            // Derive the code from the kind that is already on the wire, so a
+            // future detail-carrying kind cannot ship a contradicting code.
+            let code = object
+                .get("kind")
+                .and_then(|kind| kind.as_str())
+                .unwrap_or("command_failed")
+                .to_ascii_uppercase();
+            object.insert("code".into(), serde_json::Value::String(code));
+            object.insert("error".into(), serde_json::Value::String(message));
+            value
+        }
+        _ => serde_json::json!({
+            "ok": false,
+            "code": "COMMAND_FAILED",
+            "message": message.clone(),
+            "error": message,
+        }),
+    }
+}
+
 fn map_app_err(e: AppError) -> anyhow::Error {
-    anyhow!(e.message)
+    anyhow::Error::new(e)
 }
 
 fn print_json<T: Serialize>(value: &T, json: bool) {
@@ -2997,11 +3078,158 @@ fn print_json<T: Serialize>(value: &T, json: bool) {
 
 #[cfg(test)]
 mod tests {
+    /// An agent has to name the directory that is in the way and say the
+    /// contents survived. Flattening the refusal into one sentence is what
+    /// made that impossible, so the paths must reach the envelope as data.
+    #[test]
+    fn a_deployment_refusal_keeps_its_paths_in_the_json_envelope() {
+        let err = map_app_err(AppError::target_conflict(
+            "Refusing to deploy: 1 of 2 target(s) …",
+            vec![app_lib::core::error::TargetConflictDetail {
+                path: "/home/me/.claude/skills/db".to_string(),
+                reason: "is not a managed deployment".to_string(),
+            }],
+        ));
+
+        let envelope = error_envelope(&err);
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["code"], "TARGET_CONFLICT");
+        assert_eq!(envelope["kind"], "target_conflict");
+        assert_eq!(
+            envelope["details"]["conflicts"][0]["path"],
+            "/home/me/.claude/skills/db"
+        );
+    }
+
+    /// Everything else keeps the shape callers already parse.
+    #[test]
+    fn an_ordinary_failure_keeps_the_command_failed_envelope() {
+        let envelope = error_envelope(&anyhow!("no agent key provided"));
+        assert_eq!(envelope["code"], "COMMAND_FAILED");
+        assert_eq!(envelope["message"], "no agent key provided");
+        assert!(envelope.get("details").is_none());
+    }
+
     use super::*;
     use app_lib::core::skill_store::{ScenarioRecord, SkillRecord};
     use app_lib::core::tool_adapters::{CustomToolDef, ToolCategory};
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn deployment_dry_runs_refuse_a_foreign_target_without_changes() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("skills.db")).unwrap();
+        let source = tmp.path().join("central/demo");
+        let target_root = tmp.path().join("agent-skills");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&target_root).unwrap();
+        fs::write(source.join("SKILL.md"), "# Demo\n").unwrap();
+        tool_service::set_custom_tools(
+            &store,
+            &[CustomToolDef {
+                key: "test_agent".to_string(),
+                display_name: "Test Agent".to_string(),
+                skills_dir: target_root.to_string_lossy().to_string(),
+                project_relative_skills_dir: None,
+                category: ToolCategory::Coding,
+            }],
+        )
+        .unwrap();
+        store
+            .insert_skill(&SkillRecord {
+                id: "skill-demo".to_string(),
+                name: "demo".to_string(),
+                description: None,
+                source_type: "local".to_string(),
+                source_ref: Some(source.to_string_lossy().to_string()),
+                source_ref_resolved: None,
+                source_subpath: None,
+                source_branch: None,
+                source_revision: None,
+                remote_revision: None,
+                central_path: source.to_string_lossy().to_string(),
+                content_hash: None,
+                enabled: true,
+                created_at: 1,
+                updated_at: 1,
+                status: "ok".to_string(),
+                update_status: "local_only".to_string(),
+                last_checked_at: None,
+                last_check_error: None,
+            })
+            .unwrap();
+        store
+            .insert_scenario(&ScenarioRecord {
+                id: "preset-demo".to_string(),
+                name: "Demo".to_string(),
+                description: None,
+                icon: None,
+                sort_order: 0,
+                created_at: 1,
+                updated_at: 1,
+            })
+            .unwrap();
+        store
+            .add_skill_to_scenario("preset-demo", "skill-demo")
+            .unwrap();
+
+        let target = target_root.join("demo");
+        let foreign = tmp.path().join("foreign");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join("mine.txt"), "keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&foreign, &target).unwrap();
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(&target).unwrap();
+            fs::write(target.join("mine.txt"), "keep").unwrap();
+        }
+
+        let skill_err = run_skill_deployment(
+            &store,
+            &["demo".to_string()],
+            &["test_agent".to_string()],
+            true,
+            true,
+        )
+        .unwrap_err();
+        let preset_err =
+            run_preset_deployment(&store, "Demo", &["test_agent".to_string()], true, true)
+                .unwrap_err();
+        let sync_err = run_sync(&store, Some("Demo"), Some("test_agent"), true).unwrap_err();
+        assert_eq!(store.get_active_scenario_id().unwrap(), None);
+        assert!(store.get_all_targets().unwrap().is_empty());
+        let real_skill_err = run_skill_deployment(
+            &store,
+            &["demo".to_string()],
+            &["test_agent".to_string()],
+            true,
+            false,
+        )
+        .unwrap_err();
+        let real_preset_err =
+            run_preset_deployment(&store, "Demo", &["test_agent".to_string()], true, false)
+                .unwrap_err();
+        let real_sync_err = run_sync(&store, Some("Demo"), Some("test_agent"), false).unwrap_err();
+        for error in [
+            skill_err,
+            preset_err,
+            sync_err,
+            real_skill_err,
+            real_preset_err,
+            real_sync_err,
+        ] {
+            let envelope = error_envelope(&error);
+            assert_eq!(envelope["code"], "TARGET_CONFLICT");
+            assert_eq!(
+                envelope["details"]["conflicts"][0]["path"],
+                target.to_string_lossy().as_ref()
+            );
+        }
+        assert_eq!(fs::read_to_string(target.join("mine.txt")).unwrap(), "keep");
+        assert!(store.get_all_targets().unwrap().is_empty());
+    }
 
     #[test]
     fn parses_agent_friendly_commands_and_aliases() {
