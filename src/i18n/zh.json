@@ -280,7 +280,24 @@
     "undeployWhole": "停用整个套件",
     "suiteDeployed": "整个套件已部署",
     "suiteUndeployed": "整个套件已停用",
-    "requiredBy": "被 {{count}} 个技能依赖"
+    "requiredBy": "被 {{count}} 个技能依赖",
+    "suiteAssets": "非技能成员（命令 / 子代理 / 钩子…）",
+    "suiteAssetsHint": "随套件登记，让记录反映完整安装内容；资产的部署暂为手动。",
+    "assetName": "名称",
+    "assetPath": "路径",
+    "addAsset": "添加资产",
+    "assetType": {
+      "command": "命令",
+      "subagent": "子代理",
+      "hook": "钩子",
+      "mcp_config": "MCP 配置",
+      "settings_mod": "settings 修改",
+      "memory_file": "记忆文件",
+      "template": "模板",
+      "script": "脚本",
+      "in_process": "进程内组件",
+      "other": "其他"
+    }
   },
   "governance": {
     "title": "技能治理",

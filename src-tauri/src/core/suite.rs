@@ -4,12 +4,49 @@ use std::collections::HashSet;
 
 pub const SUITE_LIFECYCLES: &[&str] = &["experimental", "active", "deprecated", "archived"];
 
+pub const SUITE_ASSET_TYPES: &[&str] = &[
+    "command",
+    "subagent",
+    "hook",
+    "mcp_config",
+    "settings_mod",
+    "memory_file",
+    "template",
+    "script",
+    "in_process",
+    "other",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SuiteMember {
     pub skill_id: String,
     pub required: bool,
     pub role: Option<String>,
     pub version_requirement: Option<String>,
+    pub sort_order: i32,
+}
+
+/// A non-skill member of a suite: a path-referenced artifact the installer
+/// drops alongside the skills (slash command, subagent file, hook, config
+/// edit, ...). Registration-level only for now — deployment stays manual.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SuiteAssetInput {
+    pub asset_type: String,
+    pub name: String,
+    pub path: String,
+    pub tool: Option<String>,
+    pub notes: Option<String>,
+    pub sort_order: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SuiteAsset {
+    pub id: String,
+    pub asset_type: String,
+    pub name: String,
+    pub path: String,
+    pub tool: Option<String>,
+    pub notes: Option<String>,
     pub sort_order: i32,
 }
 
@@ -23,6 +60,8 @@ pub struct SuiteInput {
     pub lifecycle: String,
     pub tags: Vec<String>,
     pub members: Vec<SuiteMember>,
+    #[serde(default)]
+    pub assets: Vec<SuiteAssetInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,6 +74,8 @@ pub struct SuiteRecord {
     pub lifecycle: String,
     pub tags: Vec<String>,
     pub members: Vec<SuiteMember>,
+    #[serde(default)]
+    pub assets: Vec<SuiteAsset>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -84,6 +125,27 @@ impl SuiteInput {
         if self.members.is_empty() {
             bail!("a suite must contain at least one skill");
         }
+
+        let mut asset_names = HashSet::new();
+        for (index, asset) in self.assets.iter_mut().enumerate() {
+            if !SUITE_ASSET_TYPES.contains(&asset.asset_type.as_str()) {
+                bail!("invalid suite asset type: {}", asset.asset_type);
+            }
+            asset.name = required_text(
+                "suite asset name",
+                std::mem::take(&mut asset.name),
+            )?;
+            if !asset_names.insert(asset.name.clone()) {
+                bail!("duplicate suite asset name: {}", asset.name);
+            }
+            asset.path = required_text(
+                "suite asset path",
+                std::mem::take(&mut asset.path),
+            )?;
+            asset.tool = optional_text(asset.tool.take());
+            asset.notes = optional_text(asset.notes.take());
+            asset.sort_order = index as i32;
+        }
         Ok(self)
     }
 }
@@ -124,6 +186,7 @@ mod tests {
                 version_requirement: None,
                 sort_order: 99,
             }],
+            assets: Vec::new(),
         }
         .validate_and_normalize()
         .unwrap();
@@ -149,6 +212,7 @@ mod tests {
                 version_requirement: None,
                 sort_order: 0,
             }],
+            assets: Vec::new(),
         };
         assert!(input.validate_and_normalize().is_err());
     }

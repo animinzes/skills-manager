@@ -290,6 +290,19 @@ pub(crate) fn reindex_from_metadata_unlocked(store: &SkillStore) -> Result<()> {
                 lifecycle: file.suite.lifecycle,
                 tags: file.suite.tags,
                 members: file.suite.members,
+                assets: file
+                    .suite
+                    .assets
+                    .into_iter()
+                    .map(|asset| super::suite::SuiteAssetInput {
+                        asset_type: asset.asset_type,
+                        name: asset.name,
+                        path: asset.path,
+                        tool: asset.tool,
+                        notes: asset.notes,
+                        sort_order: asset.sort_order,
+                    })
+                    .collect(),
             })?;
         }
     }
@@ -1051,6 +1064,7 @@ mod tests {
                     version_requirement: Some(">=1.0".into()),
                     sort_order: 0,
                 }],
+                assets: Vec::new(),
             })
             .unwrap();
 

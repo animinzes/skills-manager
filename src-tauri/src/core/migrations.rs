@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 10;
+const LATEST_VERSION: u32 = 11;
 
 /// Run all pending migrations on the database.
 ///
@@ -57,6 +57,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         7 => migrate_v7_to_v8(conn),
         8 => migrate_v8_to_v9(conn),
         9 => migrate_v9_to_v10(conn),
+        10 => migrate_v10_to_v11(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -441,6 +442,32 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_agent_definition_targets_tool
             ON agent_definition_targets(tool);
+        ",
+    )?;
+    Ok(())
+}
+
+/// v10 → v11: non-skill suite members. A suite like Claude Scholar installs
+/// commands, agents, hooks and config edits alongside its skills; those are
+/// registered as path-referenced assets so the suite record reflects the
+/// whole installation. Asset deployment itself stays manual for now —
+/// this schema records membership and provenance.
+fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS suite_assets (
+            id TEXT PRIMARY KEY,
+            suite_id TEXT NOT NULL REFERENCES suites(id) ON DELETE CASCADE,
+            asset_type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            path TEXT NOT NULL,
+            tool TEXT,
+            notes TEXT,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_suite_assets_suite
+            ON suite_assets(suite_id);
         ",
     )?;
     Ok(())

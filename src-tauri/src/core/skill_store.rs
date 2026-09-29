@@ -9,7 +9,7 @@ use super::crypto;
 use super::governance::{
     AgentSupport, SkillDependency, SkillGovernanceInput, SkillGovernanceProfile, SkillPermissions,
 };
-use super::suite::{SuiteInput, SuiteRecord};
+use super::suite::{SuiteAssetInput, SuiteInput, SuiteRecord};
 
 /// Settings keys whose values are encrypted at rest with AES-256-GCM.
 const SENSITIVE_KEYS: &[&str] = &["proxy_url", "git_backup_remote_url"];
@@ -1559,6 +1559,7 @@ impl SkillStore {
             suites.push(SuiteRecord {
                 tags: query_suite_tags(&conn, &id)?,
                 members: query_suite_members(&conn, &id)?,
+                assets: query_suite_assets(&conn, &id)?,
                 id,
                 name,
                 description,
@@ -1650,20 +1651,30 @@ impl SkillStore {
                 ],
             )?;
         }
+        tx.execute("DELETE FROM suite_assets WHERE suite_id = ?1", params![&id])?;
+        for asset in &input.assets {
+            tx.execute(
+                "INSERT INTO suite_assets
+                    (id, suite_id, asset_type, name, path, tool, notes, sort_order, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    &id,
+                    &asset.asset_type,
+                    &asset.name,
+                    &asset.path,
+                    &asset.tool,
+                    &asset.notes,
+                    asset.sort_order,
+                    now,
+                ],
+            )?;
+        }
         tx.commit()?;
 
-        Ok(SuiteRecord {
-            id,
-            name: input.name,
-            description: input.description,
-            version: input.version,
-            category: input.category,
-            lifecycle: input.lifecycle,
-            tags: input.tags,
-            members: input.members,
-            created_at,
-            updated_at: now,
-        })
+        drop(conn);
+        self.get_suite(&id)?
+            .ok_or_else(|| anyhow::anyhow!("suite {id} not found after save"))
     }
 
     pub fn delete_suite(&self, suite_id: &str) -> Result<bool> {
@@ -1903,6 +1914,27 @@ fn query_suite_tags(conn: &Connection, suite_id: &str) -> Result<Vec<String>> {
         .query_map(params![suite_id], |row| row.get(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(tags)
+}
+
+fn query_suite_assets(conn: &Connection, suite_id: &str) -> Result<Vec<super::suite::SuiteAsset>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, asset_type, name, path, tool, notes, sort_order
+         FROM suite_assets WHERE suite_id = ?1 ORDER BY sort_order, name",
+    )?;
+    let rows = stmt
+        .query_map(params![suite_id], |row| {
+            Ok(super::suite::SuiteAsset {
+                id: row.get(0)?,
+                asset_type: row.get(1)?,
+                name: row.get(2)?,
+                path: row.get(3)?,
+                tool: row.get(4)?,
+                notes: row.get(5)?,
+                sort_order: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 fn query_suite_members(conn: &Connection, suite_id: &str) -> Result<Vec<super::suite::SuiteMember>> {
@@ -2216,6 +2248,7 @@ mod suite_tests {
                     version_requirement: None,
                     sort_order: 0,
                 }],
+                assets: Vec::new(),
             })
             .unwrap();
 
@@ -2235,6 +2268,7 @@ mod suite_tests {
                     version_requirement: None,
                     sort_order: 0,
                 }],
+                assets: Vec::new(),
             })
             .unwrap();
         assert_eq!(replaced.members.len(), 1);
@@ -2243,5 +2277,72 @@ mod suite_tests {
 
         store.delete_suite(&saved.id).unwrap();
         assert!(store.get_all_suites().unwrap().is_empty());
+    }
+
+    #[test]
+    fn suite_assets_roundtrip_and_replace_whole() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("test.db")).unwrap();
+        store.insert_skill(&skill("a")).unwrap();
+        let input = |assets: Vec<SuiteAssetInput>| SuiteInput {
+            id: None,
+            name: "Claude Scholar".into(),
+            description: None,
+            version: Some("1.0".into()),
+            category: "research".into(),
+            lifecycle: "active".into(),
+            tags: vec![],
+            members: vec![SuiteMember {
+                skill_id: "a".into(),
+                required: true,
+                role: None,
+                version_requirement: None,
+                sort_order: 0,
+            }],
+            assets,
+        };
+        let base = |asset_type: &str, name: &str, path: &str| SuiteAssetInput {
+            asset_type: asset_type.into(),
+            name: name.into(),
+            path: path.into(),
+            tool: Some("claude_code".into()),
+            notes: None,
+            sort_order: 0,
+        };
+
+        let saved = store
+            .replace_suite(input(vec![
+                base("command", "sc-plan", "~/.claude/commands/sc/plan.md"),
+                base("hook", "session-start", "~/.claude/hooks/session-start.js"),
+            ]))
+            .unwrap();
+        let assets = &store.get_suite(&saved.id).unwrap().unwrap().assets;
+        assert_eq!(assets.len(), 2);
+        assert_eq!(assets[0].asset_type, "command");
+        assert!(!assets[0].id.is_empty(), "asset ids must be real after save");
+
+        // Replacement swaps the whole asset list, not merges.
+        let replaced = store
+            .replace_suite(SuiteInput {
+                id: Some(saved.id.clone()),
+                ..input(vec![base("subagent", "scholar-agent", "~/.claude/agents/scholar.md")])
+            })
+            .unwrap();
+        assert_eq!(replaced.assets.len(), 1);
+        assert_eq!(replaced.assets[0].asset_type, "subagent");
+        assert_eq!(store.get_suite(&saved.id).unwrap().unwrap().assets.len(), 1);
+
+        // Deleting the suite cascades to its assets.
+        store.delete_suite(&saved.id).unwrap();
+        let conn = store.conn.lock().unwrap();
+        let orphaned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM suite_assets WHERE suite_id = ?1",
+                params![&saved.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        assert_eq!(orphaned, 0);
     }
 }

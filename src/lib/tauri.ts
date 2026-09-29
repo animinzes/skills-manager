@@ -105,6 +105,32 @@ export interface SuiteMember {
   sort_order: number;
 }
 
+export const SUITE_ASSET_TYPES = [
+  "command",
+  "subagent",
+  "hook",
+  "mcp_config",
+  "settings_mod",
+  "memory_file",
+  "template",
+  "script",
+  "in_process",
+  "other",
+] as const;
+
+export interface SuiteAssetInput {
+  asset_type: string;
+  name: string;
+  path: string;
+  tool: string | null;
+  notes: string | null;
+  sort_order: number;
+}
+
+export interface SuiteAsset extends SuiteAssetInput {
+  id: string;
+}
+
 export interface SuiteInput {
   id: string | null;
   name: string;
@@ -114,6 +140,7 @@ export interface SuiteInput {
   lifecycle: SkillLifecycle;
   tags: string[];
   members: SuiteMember[];
+  assets: SuiteAssetInput[];
 }
 
 export interface SuiteRecord extends Omit<SuiteInput, "id"> {

@@ -280,7 +280,24 @@
     "undeployWhole": "Disable entire suite",
     "suiteDeployed": "Entire suite deployed",
     "suiteUndeployed": "Entire suite disabled",
-    "requiredBy": "Required by {{count}} skills"
+    "requiredBy": "Required by {{count}} skills",
+    "suiteAssets": "Non-skill members (commands, agents, hooks, …)",
+    "suiteAssetsHint": "Registered with the suite so the record reflects the whole installation. Deployment of assets stays manual for now.",
+    "assetName": "Name",
+    "assetPath": "Path",
+    "addAsset": "Add asset",
+    "assetType": {
+      "command": "Command",
+      "subagent": "Subagent",
+      "hook": "Hook",
+      "mcp_config": "MCP config",
+      "settings_mod": "Settings edit",
+      "memory_file": "Memory file",
+      "template": "Template",
+      "script": "Script",
+      "in_process": "In-process",
+      "other": "Other"
+    }
   },
   "governance": {
     "title": "Skill governance",

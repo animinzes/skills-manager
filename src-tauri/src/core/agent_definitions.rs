@@ -506,6 +506,7 @@ mod tests {
     /// file, undeploy removes it, delete cleans everything.
     #[test]
     fn import_target_undeploy_delete_roundtrip() {
+        let _base = central_repo::test_base_dir_lock();
         central_repo::set_test_base_dir_override(Some(tempdir().unwrap().path().to_path_buf()));
         let tmp = tempdir().unwrap();
         let store = store_in(tmp.path());
@@ -547,6 +548,7 @@ mod tests {
 
     #[test]
     fn undeploy_refuses_when_target_drifted() {
+        let _base = central_repo::test_base_dir_lock();
         central_repo::set_test_base_dir_override(Some(tempdir().unwrap().path().to_path_buf()));
         let tmp = tempdir().unwrap();
         let store = store_in(tmp.path());
@@ -577,6 +579,7 @@ mod tests {
 
     #[test]
     fn scan_reports_well_formed_rows() {
+        let _base = central_repo::test_base_dir_lock();
         central_repo::set_test_base_dir_override(Some(tempdir().unwrap().path().to_path_buf()));
         let tmp = tempdir().unwrap();
         let store = store_in(tmp.path());
