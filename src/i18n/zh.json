@@ -707,7 +707,13 @@
         "pending": "待导入",
         "imported": "已导入"
       }
-    }
+    },
+    "qualityOn": "质量过滤已开启",
+    "qualityOff": "质量过滤已关闭",
+    "qualityHidden": "已隐藏 {{count}} 个低信号条目（非可信来源且安装量低）",
+    "trustedBadge": "可信",
+    "trustedSources": "可信来源",
+    "trustedHint": "人工筛选的官方仓库，点击填入安装表单。"
   },
   "settings": {
     "title": "设置",

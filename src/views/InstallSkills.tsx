@@ -28,6 +28,8 @@ import { toast } from "sonner";
 import { cn } from "../utils";
 import { useApp } from "../context/AppContext";
 import * as api from "../lib/tauri";
+import { TRUSTED_SOURCES, isTrustedSource, passesQualityBar } from "../lib/trustedSources";
+import { ShieldCheck } from "lucide-react";
 import type { ScanResult, SkillsShSkill, BatchImportResult, GitPreviewResult } from "../lib/tauri";
 import { open } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -51,6 +53,7 @@ export function InstallSkills() {
   const [marketTab, setMarketTab] = useState<"hot" | "trending" | "alltime">("alltime");
   const [marketQuery, setMarketQuery] = useState("");
   const [marketSourceFilter, setMarketSourceFilter] = useState("all");
+  const [showLowSignal, setShowLowSignal] = useState(false);
   const [marketSkills, setMarketSkills] = useState<SkillsShSkill[]>([]);
   const [marketPage, setMarketPage] = useState(1);
   const [marketSearchLimit, setMarketSearchLimit] = useState(MARKET_SEARCH_STEP);
@@ -661,14 +664,29 @@ export function InstallSkills() {
   }, [computeVisibleCount]);
 
   const filteredMarketSkills = useMemo(() => {
-    const filtered = marketSourceFilter === "all"
+    const bySource = marketSourceFilter === "all"
       ? marketSkills
       : marketSkills.filter((skill) => skill.source === marketSourceFilter);
+    // Quality bar (default on): skills.sh ranks by install telemetry with no
+    // curation, so entries from untrusted owners below the install threshold
+    // are hidden until the user expands them.
+    const qualityFiltered = showLowSignal
+      ? bySource
+      : bySource.filter((skill) => passesQualityBar(skill.source, skill.installs));
+    const filtered = qualityFiltered.length > 0 || showLowSignal
+      ? qualityFiltered
+      : bySource;
     if (debouncedMarketQuery.trim().length > 0) {
       return [...filtered].sort((a, b) => b.installs - a.installs);
     }
     return filtered;
-  }, [marketSkills, marketSourceFilter, debouncedMarketQuery]);
+  }, [marketSkills, marketSourceFilter, debouncedMarketQuery, showLowSignal]);
+
+  const hiddenLowSignalCount = useMemo(
+    () =>
+      marketSkills.filter((skill) => !passesQualityBar(skill.source, skill.installs)).length,
+    [marketSkills]
+  );
 
   const totalMarketPages = Math.max(1, Math.ceil(filteredMarketSkills.length / MARKET_PAGE_SIZE));
   const currentMarketPage = Math.min(marketPage, totalMarketPages);
@@ -998,6 +1016,25 @@ export function InstallSkills() {
             <div className="pb-8">
               <div ref={marketListRef} className="scroll-mt-4" />
 
+              <div className="mb-2 flex items-center justify-between gap-2 px-1">
+                <button
+                  onClick={() => setShowLowSignal((value) => !value)}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] transition-colors",
+                    showLowSignal
+                      ? "border-border-subtle text-muted hover:bg-surface-hover"
+                      : "border-emerald-500/30 bg-emerald-500/10 text-emerald-500"
+                  )}
+                >
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  {showLowSignal ? t("install.qualityOff") : t("install.qualityOn")}
+                </button>
+                {!showLowSignal && hiddenLowSignalCount > 0 && (
+                  <span className="text-[12px] text-faint">
+                    {t("install.qualityHidden", { count: hiddenLowSignalCount })}
+                  </span>
+                )}
+              </div>
               {filteredMarketSkills.length === 0 ? (
                 <div className="app-panel flex flex-col items-center justify-center rounded-2xl px-6 py-14 text-center">
                   <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-border bg-background text-muted">
@@ -1037,6 +1074,15 @@ export function InstallSkills() {
                             <div className="min-w-0">
                               <h3 className="truncate text-[13px] font-semibold text-secondary">
                                 {displayName}
+                                {isTrustedSource(skill.source) && (
+                                  <span
+                                    className="ml-1 inline-flex items-center rounded-full border border-emerald-500/25 bg-emerald-500/10 px-1.5 text-[10px] font-medium text-emerald-500"
+                                    title={t("install.trustedBadge")}
+                                  >
+                                    <ShieldCheck className="mr-0.5 h-2.5 w-2.5" />
+                                    {t("install.trustedBadge")}
+                                  </span>
+                                )}
                               </h3>
                               {showSkillId ? (
                                 <p className="truncate text-[13px] leading-4 text-muted">{skill.skill_id}</p>
@@ -1453,6 +1499,26 @@ export function InstallSkills() {
             </div>
             <h2 className="mb-1 text-[14px] font-semibold text-primary">{t("install.gitTitle")}</h2>
             <p className="mb-4 text-[13px] text-muted">{t("install.gitDesc")}</p>
+
+            <div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
+              <p className="mb-2 text-[12px] font-medium text-emerald-600 dark:text-emerald-400">
+                {t("install.trustedSources")}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {TRUSTED_SOURCES.map((source) => (
+                  <button
+                    key={source.repo}
+                    onClick={() => setGitUrl(`https://github.com/${source.repo}`)}
+                    title={`${source.repo} — ${source.note}`}
+                    className="inline-flex items-center gap-1 rounded-full border border-border-subtle bg-background px-2.5 py-1 text-[12px] text-secondary transition-colors hover:border-emerald-500/40 hover:text-emerald-600 dark:hover:text-emerald-400"
+                  >
+                    <ShieldCheck className="h-3 w-3 text-emerald-500" />
+                    {source.repo}
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[11.5px] text-faint">{t("install.trustedHint")}</p>
+            </div>
 
             <div className="space-y-3">
               <div>

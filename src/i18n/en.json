@@ -707,7 +707,13 @@
         "pending": "Pending",
         "imported": "Imported"
       }
-    }
+    },
+    "qualityOn": "Quality filter on",
+    "qualityOff": "Quality filter off",
+    "qualityHidden": "{{count}} low-signal entries hidden (untrusted owner, low installs)",
+    "trustedBadge": "Trusted",
+    "trustedSources": "Trusted sources",
+    "trustedHint": "Curated official repositories; click to fill the install form."
   },
   "settings": {
     "title": "Settings",

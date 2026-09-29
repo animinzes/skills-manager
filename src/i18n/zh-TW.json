@@ -659,7 +659,13 @@
         "pending": "待匯入",
         "imported": "已匯入"
       }
-    }
+    },
+    "qualityOn": "品質過濾已開啟",
+    "qualityOff": "品質過濾已關閉",
+    "qualityHidden": "已隱藏 {{count}} 個低訊號條目（非可信來源且安裝量低）",
+    "trustedBadge": "可信",
+    "trustedSources": "可信來源",
+    "trustedHint": "人工篩選的官方倉庫，點擊填入安裝表單。"
   },
   "settings": {
     "title": "設定",
