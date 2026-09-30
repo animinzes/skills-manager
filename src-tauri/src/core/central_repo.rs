@@ -243,7 +243,37 @@ pub fn base_dir() -> PathBuf {
         return path;
     }
 
+    // Test builds must never resolve to a real library. The base-dir
+    // override is process-wide state and plenty of tests set and clear it
+    // without holding the guard; any interleaving that leaves no override
+    // active must still land on scratch space, never on the machine's
+    // repo-config.json or ~/.skills-manager (that is exactly how fixture
+    // directories like "skill-two" leaked into real libraries).
+    #[cfg(test)]
+    {
+        return test_scratch_base_dir();
+    }
+
+    #[cfg(not(test))]
     live_base_from(&load_config())
+}
+
+/// Per-process scratch library used by test builds when no override is
+/// active. Created once and shared; tests that need isolation set their own
+/// override (guarded by [`test_base_dir_lock`]).
+#[cfg(test)]
+fn test_scratch_base_dir() -> PathBuf {
+    static TEST_SCRATCH: OnceLock<PathBuf> = OnceLock::new();
+    TEST_SCRATCH
+        .get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!(
+                "skills-manager-test-scratch-{}",
+                std::process::id()
+            ));
+            let _ = std::fs::create_dir_all(&dir);
+            dir
+        })
+        .clone()
 }
 
 /// The location a pending move will go to at the next launch, if any.
