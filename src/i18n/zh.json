@@ -297,7 +297,14 @@
       "script": "脚本",
       "in_process": "进程内组件",
       "other": "其他"
-    }
+    },
+    "matrix": "部署矩阵",
+    "matrixSkill": "技能",
+    "matrixSummary": "{{count}} 个技能 × {{agents}} 个 Agent",
+    "matrixPrev": "上一页",
+    "matrixNext": "下一页",
+    "matrixDeploy": "部署到此 Agent",
+    "matrixUndeploy": "从此 Agent 移除"
   },
   "governance": {
     "title": "技能治理",

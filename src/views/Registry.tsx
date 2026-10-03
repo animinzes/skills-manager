@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Boxes, History, Loader2, Package, Pencil, Plus, RefreshCw, Save, Search, Tag, Trash2, Wrench, X, PackagePlus } from "lucide-react";
+import { Boxes, History, Loader2, Package, Pencil, Plus, RefreshCw, Save, Search, Tag, Trash2, Wrench, X, PackagePlus, Grid3x3 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useApp } from "../context/AppContext";
 import { getErrorMessage } from "../lib/error";
-import {
-  getRegistry,
+import {  getRegistry,
   deleteSuite,
   saveSkillGovernance,
   saveSuite,
@@ -17,10 +16,13 @@ import {
   type SuiteInput,
   type SuiteRecord,
   SUITE_ASSET_TYPES,
+  syncSkillToTool,
+  unsyncSkillFromTool,
 } from "../lib/tauri";
 import { cn } from "../utils";
+import { AgentIcon } from "../components/AgentIcon";
 
-type Tab = "skills" | "suites" | "resources" | "history";
+type Tab = "skills" | "suites" | "resources" | "history" | "matrix";
 
 const KINDS: SkillKind[] = ["capability", "tool_guide", "integration", "workflow", "governance"];
 const inputClass = "rounded-lg border border-border-subtle bg-background px-3 py-2 text-[12.5px] text-secondary outline-none focus:border-border";
@@ -54,6 +56,8 @@ export function Registry() {
   const [suiteDraft, setSuiteDraft] = useState<SuiteInput | null>(null);
   const [saving, setSaving] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState("");
+  const [matrixPage, setMatrixPage] = useState(0);
+  const [matrixBusy, setMatrixBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -185,6 +189,7 @@ export function Registry() {
     { id: "suites", icon: Package, count: snapshot?.suites.length ?? 0 },
     { id: "resources", icon: Wrench, count: snapshot?.resources.length ?? 0 },
     { id: "history", icon: History, count: snapshot?.history.length ?? 0 },
+    { id: "matrix", icon: Grid3x3, count: snapshot?.skills.length ?? 0 },
   ];
 
   return (
@@ -248,6 +253,82 @@ export function Registry() {
         {snapshot && tab === "resources" && <section className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">{snapshot.resources.map((resource) => <article key={`${resource.resource_type}:${resource.name}`} className="rounded-xl border border-border-subtle bg-surface p-4"><div className="flex items-center gap-2"><Wrench className="h-4 w-4 text-accent" /><h3 className="text-[13px] font-medium text-secondary">{resource.name}</h3></div><p className="mt-2 text-[11.5px] uppercase tracking-wide text-faint">{resource.resource_type}</p><p className="mt-2 text-[12px] text-muted">{t("registry.requiredBy", { count: resource.required_by })}</p></article>)}</section>}
 
         {snapshot && tab === "history" && <section className="overflow-hidden rounded-xl border border-border-subtle bg-surface"><div className="border-b border-border-subtle px-4 py-3 text-[11px] text-faint">{snapshot.history_path}</div>{snapshot.history.map((entry) => <div key={`${entry.ts}-${entry.id}`} className="flex items-start gap-3 border-b border-border-subtle px-4 py-3 last:border-b-0"><span className={cn("mt-1 h-2 w-2 rounded-full", entry.success ? "bg-emerald-500" : "bg-red-500")} /><div className="min-w-0 flex-1"><div className="text-[12.5px] font-medium text-secondary">{entry.action}{entry.skill_name ? ` · ${entry.skill_name}` : ""}</div><div className="mt-1 break-all text-[11.5px] text-muted">{entry.detail || entry.tool || "—"}</div></div><time className="text-[11px] text-faint">{new Date(entry.ts * 1000).toLocaleString()}</time></div>)}</section>}
+        {snapshot && tab === "matrix" && (() => {
+          const columns = installedAgents;
+          const PAGE = 40;
+          const totalPages = Math.max(1, Math.ceil(snapshot.skills.length / PAGE));
+          const page = Math.min(matrixPage, totalPages - 1);
+          const rowsPage = snapshot.skills.slice(page * PAGE, (page + 1) * PAGE);
+          const toggleCell = async (skillId: string, tool: string, deployed: boolean) => {
+            setMatrixBusy(`${skillId}:${tool}`);
+            try {
+              if (deployed) await unsyncSkillFromTool(skillId, tool);
+              else await syncSkillToTool(skillId, tool);
+              await load();
+            } catch (error) {
+              toast.error(getErrorMessage(error, t("common.error")));
+            } finally {
+              setMatrixBusy(null);
+            }
+          };
+          return (
+            <section className="overflow-hidden rounded-xl border border-border-subtle bg-surface">
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-[12px]">
+                  <thead>
+                    <tr className="border-b border-border-subtle">
+                      <th className="sticky left-0 z-10 bg-surface px-3 py-2 text-left font-medium text-muted">{t("registry.matrixSkill")}</th>
+                      {columns.map((tool) => (
+                        <th key={tool.key} className="px-2 py-2" title={tool.display_name}>
+                          <div className="flex flex-col items-center gap-1">
+                            <AgentIcon agentKey={tool.key} displayName={tool.display_name} className="h-5 w-5 rounded-[4px]" />
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rowsPage.map((item) => (
+                      <tr key={item.skill.id} className="border-b border-border-subtle last:border-b-0 hover:bg-surface-hover/50">
+                        <td className="sticky left-0 z-10 bg-surface px-3 py-1.5">
+                          <span className="block max-w-[220px] truncate text-secondary" title={item.skill.name}>{item.skill.name}</span>
+                        </td>
+                        {columns.map((tool) => {
+                          const deployed = item.targets.some((target) => target.tool === tool.key);
+                          const busyKey = `${item.skill.id}:${tool.key}`;
+                          return (
+                            <td key={tool.key} className="px-2 py-1.5 text-center">
+                              <button
+                                onClick={() => void toggleCell(item.skill.id, tool.key, deployed)}
+                                disabled={matrixBusy === busyKey}
+                                title={`${item.skill.name} · ${tool.display_name} — ${deployed ? t("registry.matrixUndeploy") : t("registry.matrixDeploy")}`}
+                                className={cn(
+                                  "inline-flex h-4 w-4 items-center justify-center rounded-full border transition-colors",
+                                  deployed
+                                    ? "border-emerald-500/40 bg-emerald-500/70 hover:bg-emerald-500"
+                                    : "border-border-subtle bg-transparent hover:border-emerald-500/40",
+                                  matrixBusy === busyKey && "animate-pulse"
+                                )}
+                              />
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="flex items-center justify-between border-t border-border-subtle px-4 py-2 text-[11.5px] text-muted">
+                <span>{t("registry.matrixSummary", { count: snapshot.skills.length, agents: columns.length })}</span>
+                <span className="flex items-center gap-2">
+                  <button onClick={() => setMatrixPage(Math.max(0, page - 1))} disabled={page === 0} className="rounded px-2 py-0.5 hover:bg-surface-hover disabled:opacity-40">{t("registry.matrixPrev")}</button>
+                  <span className="tabular-nums">{page + 1} / {totalPages}</span>
+                  <button onClick={() => setMatrixPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1} className="rounded px-2 py-0.5 hover:bg-surface-hover disabled:opacity-40">{t("registry.matrixNext")}</button>
+                </span>
+              </div>
+            </section>
+          );
+        })()}
       </div>
 
       {editingSkill && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"><div className="w-full max-w-lg rounded-2xl border border-border bg-surface p-5 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-[15px] font-semibold text-primary">{editingSkill.skill.name}</h2><button onClick={() => setEditingSkill(null)}><X className="h-4 w-4 text-muted" /></button></div><div className="mt-4 grid gap-3"><label className="text-[12px] text-muted">{t("registry.category")}<select value={skillKind} onChange={(event) => setSkillKind(event.target.value as SkillKind)} className={`${inputClass} mt-1 w-full`}>{KINDS.map((value) => <option key={value} value={value}>{t(`governance.options.kind.${value}`)}</option>)}</select></label><label className="text-[12px] text-muted">{t("registry.tagsComma")}<input value={skillTags} onChange={(event) => setSkillTagsDraft(event.target.value)} className={`${inputClass} mt-1 w-full`} /></label></div><div className="mt-5 flex justify-end"><button disabled={saving} onClick={() => void saveSkillClassification()} className="inline-flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12px] text-white"><Save className="h-3.5 w-3.5" />{t("common.save")}</button></div></div></div>}

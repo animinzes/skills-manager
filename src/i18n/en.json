@@ -297,7 +297,14 @@
       "script": "Script",
       "in_process": "In-process",
       "other": "Other"
-    }
+    },
+    "matrix": "Matrix",
+    "matrixSkill": "Skill",
+    "matrixSummary": "{{count}} skills × {{agents}} agents",
+    "matrixPrev": "Prev",
+    "matrixNext": "Next",
+    "matrixDeploy": "deploy here",
+    "matrixUndeploy": "remove from this agent"
   },
   "governance": {
     "title": "Skill governance",
