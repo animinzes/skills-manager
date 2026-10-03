@@ -249,6 +249,95 @@ impl From<SkillsApplyMode> for scenario_service::BatchApplyMode {
 /// this plans every (skill, agent) pair up front through
 /// `apply_skills_to_tools`, so a batch that would clobber unmanaged content
 /// is refused as a whole instead of half-applying (#363).
+/// One (skill, agent) pair that the batch would actually change.
+#[derive(Debug, Serialize)]
+pub struct ApplyPreviewPair {
+    pub skill_id: String,
+    pub skill_name: String,
+    pub tool: String,
+}
+
+/// Read-only plan for a batch apply — the change-plan step before any batch
+/// mutation (REQUIREMENTS §2.7): what would be deployed/undeployed, what is
+/// already in place and would be skipped, and whether the batch would hit
+/// unmanaged content (in which case executing it would refuse as a whole).
+#[derive(Debug, Serialize)]
+pub struct ApplyPreview {
+    pub mode: SkillsApplyMode,
+    pub pair_count: usize,
+    pub changed_pairs: usize,
+    /// Pairs that would actually be written/removed.
+    pub changed: Vec<ApplyPreviewPair>,
+    /// Pairs already in the desired state (skipped by the batch).
+    pub skipped_pairs: usize,
+    /// Non-empty when the preflight refused: the batch would refuse to apply.
+    pub conflict: Option<String>,
+}
+
+#[tauri::command]
+pub async fn preview_apply_skills_to_agents(
+    skill_ids: Vec<String>,
+    tool_keys: Vec<String>,
+    mode: SkillsApplyMode,
+    store: State<'_, Arc<SkillStore>>,
+) -> Result<ApplyPreview, AppError> {
+    let store = store.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let existing: std::collections::HashSet<(String, String)> = store
+            .get_all_targets()
+            .map_err(AppError::db)?
+            .into_iter()
+            .filter(|target| skill_ids.iter().any(|id| id == &target.skill_id))
+            .map(|target| (target.skill_id, target.tool))
+            .collect();
+        let names: std::collections::HashMap<String, String> = store
+            .get_all_skills()
+            .map_err(AppError::db)?
+            .into_iter()
+            .map(|skill| (skill.id.clone(), skill.name))
+            .collect();
+
+        let mut changed = Vec::new();
+        let mut skipped = 0usize;
+        for skill_id in &skill_ids {
+            for tool in &tool_keys {
+                let present = existing.contains(&(skill_id.clone(), tool.clone()));
+                let would_change = match mode {
+                    SkillsApplyMode::Add => !present,
+                    SkillsApplyMode::Remove => present,
+                };
+                if would_change {
+                    changed.push(ApplyPreviewPair {
+                        skill_id: skill_id.clone(),
+                        skill_name: names.get(skill_id).cloned().unwrap_or_default(),
+                        tool: tool.clone(),
+                    });
+                } else {
+                    skipped += 1;
+                }
+            }
+        }
+
+        let conflict = if matches!(mode, SkillsApplyMode::Add) {
+            scenario_service::preflight_add_skills_to_tools(&store, &skill_ids, &tool_keys)
+                .err()
+                .map(|error| error.to_string())
+        } else {
+            None
+        };
+
+        Ok(ApplyPreview {
+            mode,
+            pair_count: skill_ids.len() * tool_keys.len(),
+            changed_pairs: changed.len(),
+            skipped_pairs: skipped,
+            changed,
+            conflict,
+        })
+    })
+    .await?
+}
+
 #[tauri::command]
 pub async fn apply_skills_to_agents(
     app: AppHandle,

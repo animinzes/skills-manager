@@ -607,6 +607,11 @@
       "apply": "同步 {{count}} 项",
       "noAgents": "没有已安装并启用的 Agent。",
       "allSynced": "选中的 Skill 都已同步到这个 Agent"
+    },
+    "batchPreview": {
+      "title": "变更计划",
+      "summary": "将部署 {{changed}} 个「技能×Agent」组合；{{skipped}} 个已就位（跳过）。存在冲突时整批拒绝执行。",
+      "previewButton": "预览（{{count}}）"
     }
   },
   "install": {

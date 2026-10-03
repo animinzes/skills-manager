@@ -1042,6 +1042,7 @@ pub fn run() {
             commands::sync::get_skill_tool_toggles,
             commands::sync::set_skill_tool_toggle,
             commands::sync::apply_skills_to_agents,
+            commands::sync::preview_apply_skills_to_agents,
             // Subagent definitions
             commands::agent_definitions::get_agent_definitions,
             commands::agent_definitions::get_agent_definition_targets,

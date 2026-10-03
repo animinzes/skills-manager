@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Square, SquareCheck, X, Share2 } from "lucide-react";
+import { Square, SquareCheck, X, Share2, ShieldAlert, Eye } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../utils";
 import { AgentIcon } from "./AgentIcon";
-import type { ManagedSkill, ToolInfo } from "../lib/tauri";
+import { previewApplySkillsToAgents } from "../lib/tauri";
+import type { ApplyPreview, ManagedSkill, ToolInfo } from "../lib/tauri";
 
 interface Props {
   open: boolean;
@@ -18,24 +19,33 @@ interface Props {
  * Adds a batch of skills to one or more agents. Add-only on purpose: a tri-state
  * control where one click could either install or remove would make a bulk action
  * ambiguous. Removing stays a per-skill action on the card's agent dots.
+ *
+ * Change-plan step (REQUIREMENTS §2.7): the first confirm click only computes a
+ * read-only preview (what would be written, what is skipped, whether the batch
+ * would hit unmanaged content); the second click executes.
  */
 export function BatchSyncAgentDialog({ open, skills, tools, onClose, onApply }: Props) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<ApplyPreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
 
   useEffect(() => {
-    if (open) setSelected(new Set());
+    if (open) {
+      setSelected(new Set());
+      setPreview(null);
+    }
   }, [open]);
 
   useEffect(() => {
-    if (!open || loading) return;
+    if (!open || loading || previewing) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, loading, onClose]);
+  }, [open, loading, previewing, onClose]);
 
   const rows = useMemo(() => {
     return tools
@@ -61,12 +71,29 @@ export function BatchSyncAgentDialog({ open, skills, tools, onClose, onApply }: 
   if (!open) return null;
 
   const toggle = (key: string) => {
+    setPreview(null);
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
       return next;
     });
+  };
+
+  const handlePreview = async () => {
+    if (selected.size === 0) return;
+    setPreviewing(true);
+    try {
+      setPreview(
+        await previewApplySkillsToAgents(
+          skills.map((skill) => skill.id),
+          Array.from(selected),
+          "add"
+        )
+      );
+    } finally {
+      setPreviewing(false);
+    }
   };
 
   const handleApply = async () => {
@@ -143,6 +170,35 @@ export function BatchSyncAgentDialog({ open, skills, tools, onClose, onApply }: 
           </div>
         )}
 
+        {preview && (
+          <div
+            className={cn(
+              "mt-3 rounded-lg border p-3 text-[12px]",
+              preview.conflict
+                ? "border-red-500/30 bg-red-500/10"
+                : "border-emerald-500/25 bg-emerald-500/5"
+            )}
+          >
+            <div className="mb-1 flex items-center gap-1.5 font-medium text-secondary">
+              {preview.conflict ? (
+                <ShieldAlert className="h-3.5 w-3.5 text-red-400" />
+              ) : (
+                <Eye className="h-3.5 w-3.5 text-emerald-500" />
+              )}
+              {t("mySkills.batchPreview.title")}
+            </div>
+            <p className="text-muted">
+              {t("mySkills.batchPreview.summary", {
+                changed: preview.changed_pairs,
+                skipped: preview.skipped_pairs,
+              })}
+            </p>
+            {preview.conflict && (
+              <p className="mt-1 whitespace-pre-wrap text-red-400">{preview.conflict}</p>
+            )}
+          </div>
+        )}
+
         <div className="flex justify-end gap-2 pt-5">
           <button
             onClick={onClose}
@@ -150,15 +206,27 @@ export function BatchSyncAgentDialog({ open, skills, tools, onClose, onApply }: 
           >
             {t("common.cancel")}
           </button>
-          <button
-            onClick={handleApply}
-            disabled={loading || pendingCount === 0}
-            className="rounded-lg border border-accent-border bg-accent-dark px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {loading
-              ? t("common.loading")
-              : t("mySkills.batchSyncDialog.apply", { count: pendingCount })}
-          </button>
+          {!preview ? (
+            <button
+              onClick={handlePreview}
+              disabled={previewing || pendingCount === 0}
+              className="rounded-lg border border-accent-border bg-accent-dark px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {previewing
+                ? t("common.loading")
+                : t("mySkills.batchPreview.previewButton", { count: pendingCount })}
+            </button>
+          ) : (
+            <button
+              onClick={handleApply}
+              disabled={loading || preview.changed_pairs === 0 || Boolean(preview.conflict)}
+              className="rounded-lg border border-accent-border bg-accent-dark px-3 py-1.5 text-[13px] font-medium text-white outline-none transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loading
+                ? t("common.loading")
+                : t("mySkills.batchSyncDialog.apply", { count: preview.changed_pairs })}
+            </button>
+          )}
         </div>
       </div>
     </div>

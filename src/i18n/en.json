@@ -607,6 +607,11 @@
       "apply": "Sync {{count}}",
       "noAgents": "No installed and enabled agents.",
       "allSynced": "Every selected skill is already on this agent"
+    },
+    "batchPreview": {
+      "title": "Change plan",
+      "summary": "Will deploy {{changed}} skill×agent pairs; {{skipped}} already in place (skipped). A conflicting batch will be refused as a whole.",
+      "previewButton": "Preview ({{count}})"
     }
   },
   "install": {

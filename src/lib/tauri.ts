@@ -589,6 +589,28 @@ export const setSkillToolToggle = (
 ) =>
   invoke<void>("set_skill_tool_toggle", { skillId, presetId, tool, enabled });
 
+export interface ApplyPreviewPair {
+  skill_id: string;
+  skill_name: string;
+  tool: string;
+}
+
+export interface ApplyPreview {
+  mode: "add" | "remove";
+  pair_count: number;
+  changed_pairs: number;
+  changed: ApplyPreviewPair[];
+  skipped_pairs: number;
+  conflict: string | null;
+}
+
+export const previewApplySkillsToAgents = (
+  skillIds: string[],
+  toolKeys: string[],
+  mode: "add" | "remove"
+) =>
+  invoke<ApplyPreview>("preview_apply_skills_to_agents", { skillIds, toolKeys, mode });
+
 export const applySkillsToAgents = (
   skillIds: string[],
   toolKeys: string[],

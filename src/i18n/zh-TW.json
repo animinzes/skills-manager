@@ -564,6 +564,11 @@
       "apply": "同步 {{count}} 項",
       "noAgents": "沒有已安裝並啟用的 Agent。",
       "allSynced": "選取的 Skill 都已同步到這個 Agent"
+    },
+    "batchPreview": {
+      "title": "變更計畫",
+      "summary": "將部署 {{changed}} 個「技能×Agent」組合；{{skipped}} 個已就位（跳過）。存在衝突時整批拒絕執行。",
+      "previewButton": "預覽（{{count}}）"
     }
   },
   "install": {
