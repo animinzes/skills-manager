@@ -682,6 +682,110 @@ export const undeployAgentDefinition = (definitionId: string, tool: string) =>
 export const deleteAgentDefinition = (definitionId: string) =>
   invoke<void>("delete_agent_definition", { definitionId });
 
+// ── Slash commands ──
+
+export interface SlashCommandRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  format: string;
+  source_type: string;
+  source_ref: string | null;
+  central_path: string;
+  content_hash: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface SlashCommandTarget {
+  tool: string;
+  target_path: string;
+  mode: string;
+  synced_hash: string | null;
+  synced_at: number;
+}
+
+export interface CommandAdapterInfo {
+  tool_key: string;
+  display_name: string;
+  dir: string;
+  installed: boolean;
+}
+
+export interface DiscoveredCommand {
+  tool: string;
+  display_name: string;
+  path: string;
+  file_name: string;
+  format: string;
+  already_tracked: boolean;
+}
+
+export const getSlashCommands = () =>
+  invoke<SlashCommandRecord[]>("get_slash_commands");
+
+export const getSlashCommandTargets = (commandId: string) =>
+  invoke<SlashCommandTarget[]>("get_slash_command_targets", { commandId });
+
+export const getSlashCommandAdapters = () =>
+  invoke<CommandAdapterInfo[]>("get_slash_command_adapters");
+
+export const scanSlashCommands = () =>
+  invoke<DiscoveredCommand[]>("scan_slash_commands");
+
+export const importSlashCommand = (sourcePath: string) =>
+  invoke<SlashCommandRecord>("import_slash_command", { sourcePath });
+
+export const deploySlashCommand = (commandId: string, tool: string) =>
+  invoke<void>("deploy_slash_command", { commandId, tool });
+
+export const undeploySlashCommand = (commandId: string, tool: string) =>
+  invoke<void>("undeploy_slash_command", { commandId, tool });
+
+export const deleteSlashCommand = (commandId: string) =>
+  invoke<void>("delete_slash_command", { commandId });
+
+// ── Memory files ──
+
+export interface MemoryFileRecord {
+  id: string;
+  tool: string;
+  file_name: string;
+  source_path: string;
+  central_path: string;
+  content_hash: string | null;
+  byte_size: number;
+  snapshotted_at: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface MemorySlotInfo {
+  tool_key: string;
+  display_name: string;
+  file_name: string;
+  source_path: string;
+  exists_on_disk: boolean;
+  registered: boolean;
+  source_changed: boolean | null;
+  record: MemoryFileRecord | null;
+}
+
+export const getMemorySlots = () =>
+  invoke<MemorySlotInfo[]>("get_memory_slots");
+
+export const getMemoryFiles = () =>
+  invoke<MemoryFileRecord[]>("get_memory_files");
+
+export const registerMemoryFile = (tool: string) =>
+  invoke<MemoryFileRecord>("register_memory_file", { tool });
+
+export const refreshMemoryFile = (registrationId: string) =>
+  invoke<MemoryFileRecord>("refresh_memory_file", { registrationId });
+
+export const deleteMemoryFile = (registrationId: string) =>
+  invoke<void>("delete_memory_file", { registrationId });
+
 // ── Scan ──
 
 export const scanLocalSkills = () => invoke<ScanResult>("scan_local_skills");

@@ -28,6 +28,32 @@
     "adopted": "已收編 {{name}}",
     "deleted": "已刪除 {{name}}"
   },
+  "commands": {
+    "title": "斜線命令",
+    "centralDir": "正本存於登記庫的 commands 目錄",
+    "scan": "掃描各 Agent 目錄",
+    "library": "庫中（{{count}}）",
+    "empty": "還沒有登記任何斜線命令。掃描各 Agent 目錄，把要管理的收編進來。",
+    "discovered": "在 Agent 目錄中發現（{{count}} 個未登記）",
+    "scanHint": "掃描後會列出 Claude Code / Codex / OpenCode 目錄裡現存的命令與 prompt 檔案。",
+    "allTracked": "發現的所有檔案都已登記。",
+    "adopt": "收編",
+    "adopted": "已收編 {{name}}",
+    "deleted": "已刪除 {{name}}"
+  },
+  "memories": {
+    "title": "記憶檔案",
+    "hint": "只登記與快照備份（存於登記庫的 memories 目錄），永不代寫或回寫任何 Agent 的記憶內容。",
+    "register": "登記並快照",
+    "registeredToast": "已快照 {{tool}} 的 {{name}}",
+    "refresh": "重新快照",
+    "refreshedToast": "已重新快照 {{name}}",
+    "deleteRegistration": "移除登記",
+    "deletedToast": "已移除 {{name}} 的登記（原始檔案未動）",
+    "sourceChanged": "快照後原始檔已變化",
+    "notFound": "原始檔已不存在",
+    "absent": "不存在"
+  },
   "help": {
     "eyebrow": "操作指南",
     "title": "快速上手 Skills Manager",

@@ -1052,6 +1052,21 @@ pub fn run() {
             commands::agent_definitions::deploy_agent_definition,
             commands::agent_definitions::undeploy_agent_definition,
             commands::agent_definitions::delete_agent_definition,
+            // Slash commands
+            commands::slash_commands::get_slash_commands,
+            commands::slash_commands::get_slash_command_targets,
+            commands::slash_commands::get_slash_command_adapters,
+            commands::slash_commands::scan_slash_commands,
+            commands::slash_commands::import_slash_command,
+            commands::slash_commands::deploy_slash_command,
+            commands::slash_commands::undeploy_slash_command,
+            commands::slash_commands::delete_slash_command,
+            // Memory files
+            commands::memory_files::get_memory_slots,
+            commands::memory_files::get_memory_files,
+            commands::memory_files::register_memory_file,
+            commands::memory_files::refresh_memory_file,
+            commands::memory_files::delete_memory_file,
             // Scan
             commands::scan::scan_local_skills,
             commands::scan::import_existing_skill,

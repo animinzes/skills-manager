@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 11;
+const LATEST_VERSION: u32 = 12;
 
 /// Run all pending migrations on the database.
 ///
@@ -58,6 +58,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         8 => migrate_v8_to_v9(conn),
         9 => migrate_v9_to_v10(conn),
         10 => migrate_v10_to_v11(conn),
+        11 => migrate_v11_to_v12(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -473,6 +474,56 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v11 → v12: slash commands and memory files. `slash_commands` mirrors the
+/// subagent model exactly (central copy + per-tool deployment rows). Memory
+/// files are the opposite: registration and snapshot backup only — there are
+/// no deployment rows because the manager never writes agent memory content.
+fn migrate_v11_to_v12(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS slash_commands (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            format TEXT NOT NULL DEFAULT 'markdown',
+            source_type TEXT NOT NULL DEFAULT 'import',
+            source_ref TEXT,
+            central_path TEXT NOT NULL,
+            content_hash TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS slash_command_targets (
+            command_id TEXT NOT NULL REFERENCES slash_commands(id) ON DELETE CASCADE,
+            tool TEXT NOT NULL,
+            target_path TEXT NOT NULL,
+            mode TEXT NOT NULL DEFAULT 'copy',
+            synced_hash TEXT,
+            synced_at INTEGER NOT NULL,
+            PRIMARY KEY(command_id, tool)
+        );
+        CREATE INDEX IF NOT EXISTS idx_slash_command_targets_tool
+            ON slash_command_targets(tool);
+
+        CREATE TABLE IF NOT EXISTS memory_files (
+            id TEXT PRIMARY KEY,
+            tool TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            central_path TEXT NOT NULL,
+            content_hash TEXT,
+            byte_size INTEGER NOT NULL DEFAULT 0,
+            snapshotted_at INTEGER NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            UNIQUE(tool, file_name)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -590,6 +641,39 @@ mod tests {
         assert!(tables.contains(&"skill_governance".to_string()));
         assert!(tables.contains(&"skill_agent_support".to_string()));
         assert!(tables.contains(&"skill_dependencies".to_string()));
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+                .unwrap(),
+            LATEST_VERSION
+        );
+    }
+
+    #[test]
+    fn test_v11_database_upgrades_to_command_memory_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE slash_commands;
+             DROP TABLE slash_command_targets;
+             DROP TABLE memory_files;
+             PRAGMA user_version = 11;",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(tables.contains(&"slash_commands".to_string()));
+        assert!(tables.contains(&"slash_command_targets".to_string()));
+        assert!(tables.contains(&"memory_files".to_string()));
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),

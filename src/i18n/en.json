@@ -28,6 +28,32 @@
     "adopted": "Adopted {{name}}",
     "deleted": "Deleted {{name}}"
   },
+  "commands": {
+    "title": "Slash Commands",
+    "centralDir": "central copies under the central library's commands folder",
+    "scan": "Scan harness directories",
+    "library": "Library ({{count}})",
+    "empty": "No slash commands registered yet. Scan your harness directories and adopt the ones you want to manage.",
+    "discovered": "Discovered in harness directories ({{count}} untracked)",
+    "scanHint": "Run a scan to list command / prompt files living in Claude Code / Codex / OpenCode directories.",
+    "allTracked": "Every discovered file is already tracked.",
+    "adopt": "Adopt",
+    "adopted": "Adopted {{name}}",
+    "deleted": "Deleted {{name}}"
+  },
+  "memories": {
+    "title": "Memory Files",
+    "hint": "Registered read-only with snapshot backups under the central library's memories folder. Content is never written back to agents.",
+    "register": "Register & snapshot",
+    "registeredToast": "Snapshotted {{tool}} {{name}}",
+    "refresh": "Refresh snapshot",
+    "refreshedToast": "Snapshot refreshed for {{name}}",
+    "deleteRegistration": "Remove registration",
+    "deletedToast": "Registration removed for {{name}} (live file untouched)",
+    "sourceChanged": "Source changed since snapshot",
+    "notFound": "File missing on disk",
+    "absent": "Not present"
+  },
   "help": {
     "eyebrow": "Guide",
     "title": "Quick Start for Skills Manager",

@@ -16,6 +16,7 @@ import { ProjectDetail } from "./views/ProjectDetail";
 import { Backup } from "./views/Backup";
 import { Registry } from "./views/Registry";
 import { Subagents } from "./views/Subagents";
+import { Commands } from "./views/Commands";
 
 function ThemedToaster() {
   const { resolvedTheme } = useThemeContext();
@@ -51,6 +52,7 @@ function App() {
               <Route path="/backup" element={<Backup />} />
               <Route path="/registry" element={<Registry />} />
               <Route path="/subagents" element={<Subagents />} />
+              <Route path="/commands" element={<Commands />} />
               <Route path="/project/:id" element={<ProjectDetail />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
