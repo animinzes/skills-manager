@@ -54,6 +54,23 @@
     "notFound": "File missing on disk",
     "absent": "Not present"
   },
+  "mcp": {
+    "title": "MCP Servers",
+    "hint": "merge-written into each host config; pre-write backups under the central library, rollback restores the exact previous state",
+    "add": "Add server",
+    "register": "Register",
+    "namePlaceholder": "server name (e.g. zread)",
+    "descriptionPlaceholder": "description (optional)",
+    "httpTemplate": "http template",
+    "stdioTemplate": "stdio template",
+    "library": "Library ({{count}})",
+    "empty": "No MCP servers registered yet. Add one with a canonical config, then deploy it per host.",
+    "added": "Registered {{name}}",
+    "deleted": "Deleted {{name}}",
+    "hosts": "Host config files",
+    "hostReady": "found",
+    "hostMissing": "missing"
+  },
   "help": {
     "eyebrow": "Guide",
     "title": "Quick Start for Skills Manager",

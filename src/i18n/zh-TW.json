@@ -54,6 +54,23 @@
     "notFound": "原始檔已不存在",
     "absent": "不存在"
   },
+  "mcp": {
+    "title": "MCP 服務",
+    "hint": "合併式寫入各端設定；寫前備份存登記庫，回滾精確還原寫入前狀態",
+    "add": "新增服務",
+    "register": "登記",
+    "namePlaceholder": "服務名（如 zread）",
+    "descriptionPlaceholder": "描述（可選）",
+    "httpTemplate": "http 範本",
+    "stdioTemplate": "stdio 範本",
+    "library": "庫中（{{count}}）",
+    "empty": "還沒有登記任何 MCP 服務。先以規範設定登記，再逐端部署。",
+    "added": "已登記 {{name}}",
+    "deleted": "已刪除 {{name}}",
+    "hosts": "各端設定檔",
+    "hostReady": "已找到",
+    "hostMissing": "缺失"
+  },
   "help": {
     "eyebrow": "操作指南",
     "title": "快速上手 Skills Manager",

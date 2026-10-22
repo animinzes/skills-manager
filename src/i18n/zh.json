@@ -54,6 +54,23 @@
     "notFound": "源文件已不存在",
     "absent": "不存在"
   },
+  "mcp": {
+    "title": "MCP 服务",
+    "hint": "合并式写入各端配置；写前备份存登记库，回滚精确还原写入前状态",
+    "add": "添加服务",
+    "register": "登记",
+    "namePlaceholder": "服务名（如 zread）",
+    "descriptionPlaceholder": "描述（可选）",
+    "httpTemplate": "http 模板",
+    "stdioTemplate": "stdio 模板",
+    "library": "库中（{{count}}）",
+    "empty": "还没有登记任何 MCP 服务。先以规范配置登记，再逐端部署。",
+    "added": "已登记 {{name}}",
+    "deleted": "已删除 {{name}}",
+    "hosts": "各端配置文件",
+    "hostReady": "已找到",
+    "hostMissing": "缺失"
+  },
   "help": {
     "eyebrow": "操作指南",
     "title": "快速上手 Skills Manager",

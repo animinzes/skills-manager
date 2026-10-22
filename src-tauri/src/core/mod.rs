@@ -17,6 +17,7 @@ pub mod governance;
 pub mod install_cancel;
 pub mod installer;
 pub mod log_sanitize;
+pub mod mcp_config;
 pub mod memory_files;
 pub mod merge;
 pub mod migrations;

@@ -1067,6 +1067,15 @@ pub fn run() {
             commands::memory_files::register_memory_file,
             commands::memory_files::refresh_memory_file,
             commands::memory_files::delete_memory_file,
+            // MCP servers
+            commands::mcp_config::get_mcp_servers,
+            commands::mcp_config::get_mcp_server_targets,
+            commands::mcp_config::get_mcp_host_adapters,
+            commands::mcp_config::add_mcp_server,
+            commands::mcp_config::update_mcp_server_config,
+            commands::mcp_config::deploy_mcp_server,
+            commands::mcp_config::undeploy_mcp_server,
+            commands::mcp_config::delete_mcp_server,
             // Scan
             commands::scan::scan_local_skills,
             commands::scan::import_existing_skill,

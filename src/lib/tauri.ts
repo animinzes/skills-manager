@@ -786,6 +786,55 @@ export const refreshMemoryFile = (registrationId: string) =>
 export const deleteMemoryFile = (registrationId: string) =>
   invoke<void>("delete_memory_file", { registrationId });
 
+// ── MCP servers ──
+
+export interface McpServerRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  config_json: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface McpServerTarget {
+  tool: string;
+  config_path: string;
+  backup_path: string | null;
+  synced_at: number;
+}
+
+export interface McpHostInfo {
+  tool_key: string;
+  display_name: string;
+  config_path: string;
+  format: string;
+  exists: boolean;
+}
+
+export const getMcpServers = () => invoke<McpServerRecord[]>("get_mcp_servers");
+
+export const getMcpServerTargets = (serverId: string) =>
+  invoke<McpServerTarget[]>("get_mcp_server_targets", { serverId });
+
+export const getMcpHostAdapters = () =>
+  invoke<McpHostInfo[]>("get_mcp_host_adapters");
+
+export const addMcpServer = (name: string, description: string | null, configJson: string) =>
+  invoke<McpServerRecord>("add_mcp_server", { name, description, configJson });
+
+export const updateMcpServerConfig = (serverId: string, configJson: string) =>
+  invoke<void>("update_mcp_server_config", { serverId, configJson });
+
+export const deployMcpServer = (serverId: string, tool: string) =>
+  invoke<void>("deploy_mcp_server", { serverId, tool });
+
+export const undeployMcpServer = (serverId: string, tool: string) =>
+  invoke<void>("undeploy_mcp_server", { serverId, tool });
+
+export const deleteMcpServer = (serverId: string) =>
+  invoke<void>("delete_mcp_server", { serverId });
+
 // ── Scan ──
 
 export const scanLocalSkills = () => invoke<ScanResult>("scan_local_skills");
