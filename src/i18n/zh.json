@@ -71,6 +71,27 @@
     "hostReady": "已找到",
     "hostMissing": "缺失"
   },
+  "hooks": {
+    "title": "Hook 组",
+    "hint": "脚本与注册成组部署、成组回滚；本轮仅 Claude Code",
+    "addGroup": "新建组",
+    "create": "创建",
+    "namePlaceholder": "组名（如 my-guards）",
+    "descriptionPlaceholder": "描述（可选）",
+    "groupAdded": "已创建 {{name}}",
+    "empty": "还没有 hook 组。先建组、添加脚本文件与事件注册，再部署。",
+    "filesUnit": "个文件",
+    "regsUnit": "条注册",
+    "filePlaceholder": "要登记的脚本文件路径（会复制进组）",
+    "addFile": "添加文件",
+    "matcherPlaceholder": "matcher（可选）",
+    "commandPlaceholder": "命令（裸脚本名会指向组目录内副本）",
+    "addRegistration": "添加注册",
+    "remove": "移除",
+    "deployed": "已部署 {{name}} 到 Claude Code",
+    "undeployed": "已取消部署 {{name}}",
+    "deleted": "已删除 {{name}}"
+  },
   "help": {
     "eyebrow": "操作指南",
     "title": "快速上手 Skills Manager",

@@ -217,6 +217,19 @@ fn detect_indent(text: &str) -> usize {
     2
 }
 
+pub(crate) fn pretty_write(path: &Path, doc: &Value, original_text: &str) -> Result<()> {
+    let indent = detect_indent(original_text);
+    let ends_with_newline = original_text.ends_with('\n');
+    let mut out = serde_json::to_string_pretty(doc)?;
+    if indent != 2 {
+        out = reindent(&out, indent);
+    }
+    if ends_with_newline && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    std::fs::write(path, out).with_context(|| format!("cannot write {}", path.display()))
+}
+
 /// Read the entry currently stored at `root/name`, or None.
 pub fn json_read_entry(config_path: &Path, root: &[&str], name: &str) -> Result<Option<Value>> {
     let text = std::fs::read_to_string(config_path)
@@ -245,8 +258,6 @@ pub fn json_write_entry(
         .with_context(|| format!("cannot read {}", config_path.display()))?;
     let mut doc = serde_json::from_str::<Value>(&text)
         .with_context(|| format!("{} is not valid JSON", config_path.display()))?;
-    let indent = detect_indent(&text);
-    let ends_with_newline = text.ends_with('\n');
 
     let mut node = &mut doc;
     for key in root {
@@ -264,15 +275,7 @@ pub fn json_write_entry(
         .with_context(|| format!("{} is not an object", root.join(".")))?;
     let previous = map.insert(name.to_string(), entry.clone());
 
-    let mut out = serde_json::to_string_pretty(&doc)?;
-    if indent != 2 {
-        out = reindent(&out, indent);
-    }
-    if ends_with_newline && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    std::fs::write(config_path, out)
-        .with_context(|| format!("cannot write {}", config_path.display()))?;
+    pretty_write(config_path, &doc, &text)?;
     Ok(previous)
 }
 
@@ -282,8 +285,6 @@ pub fn json_remove_entry(config_path: &Path, root: &[&str], name: &str) -> Resul
         .with_context(|| format!("cannot read {}", config_path.display()))?;
     let mut doc = serde_json::from_str::<Value>(&text)
         .with_context(|| format!("{} is not valid JSON", config_path.display()))?;
-    let indent = detect_indent(&text);
-    let ends_with_newline = text.ends_with('\n');
 
     let mut node = &mut doc;
     for key in root {
@@ -301,15 +302,7 @@ pub fn json_remove_entry(config_path: &Path, root: &[&str], name: &str) -> Resul
         return Ok(false);
     }
 
-    let mut out = serde_json::to_string_pretty(&doc)?;
-    if indent != 2 {
-        out = reindent(&out, indent);
-    }
-    if ends_with_newline && !out.ends_with('\n') {
-        out.push('\n');
-    }
-    std::fs::write(config_path, out)
-        .with_context(|| format!("cannot write {}", config_path.display()))?;
+    pretty_write(config_path, &doc, &text)?;
     Ok(true)
 }
 

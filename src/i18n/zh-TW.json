@@ -71,6 +71,27 @@
     "hostReady": "已找到",
     "hostMissing": "缺失"
   },
+  "hooks": {
+    "title": "Hook 群組",
+    "hint": "指令碼與註冊成組部署、成組回滾；本輪僅 Claude Code",
+    "addGroup": "新增群組",
+    "create": "建立",
+    "namePlaceholder": "組名（如 my-guards）",
+    "descriptionPlaceholder": "描述（可選）",
+    "groupAdded": "已建立 {{name}}",
+    "empty": "還沒有 hook 群組。先建組、加入指令碼檔案與事件註冊，再部署。",
+    "filesUnit": "個檔案",
+    "regsUnit": "條註冊",
+    "filePlaceholder": "要登記的指令碼檔案路徑（會複製進組）",
+    "addFile": "加入檔案",
+    "matcherPlaceholder": "matcher（可選）",
+    "commandPlaceholder": "命令（裸指令碼名會指向組目錄內副本）",
+    "addRegistration": "加入註冊",
+    "remove": "移除",
+    "deployed": "已部署 {{name}} 到 Claude Code",
+    "undeployed": "已取消部署 {{name}}",
+    "deleted": "已刪除 {{name}}"
+  },
   "help": {
     "eyebrow": "操作指南",
     "title": "快速上手 Skills Manager",

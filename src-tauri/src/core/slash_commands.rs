@@ -347,13 +347,14 @@ pub fn undeploy_command(store: &SkillStore, id: &str, tool: &str) -> Result<()> 
 }
 
 /// Delete a command: removes every recorded target that still matches our
-/// deployed copy, then the central copy and the record.
+/// deployed copy, then the central copy and the record. A target we cannot
+/// read is left on disk (never delete what we cannot verify).
 pub fn delete_command(store: &SkillStore, id: &str) -> Result<()> {
     for target in list_targets(store, id)? {
         let path = PathBuf::from(&target.target_path);
         if path.exists() {
-            let current = file_hash(&path).ok();
-            if current.is_none() || current == target.synced_hash {
+            let matches = file_hash(&path).map(|h| Some(h) == target.synced_hash).unwrap_or(false);
+            if matches {
                 std::fs::remove_file(&path).ok();
             }
         }
@@ -398,7 +399,11 @@ pub fn scan_discovered(store: &SkillStore) -> Result<Vec<DiscoveredCommand>> {
         if !adapter.dir.exists() {
             continue;
         }
-        let entries = std::fs::read_dir(&adapter.dir)?;
+        // Discovery is best-effort: a harness directory we cannot list (lock,
+        // permissions) is skipped rather than failing the whole scan.
+        let Ok(entries) = std::fs::read_dir(&adapter.dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             let ext = path

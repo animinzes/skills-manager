@@ -71,6 +71,27 @@
     "hostReady": "found",
     "hostMissing": "missing"
   },
+  "hooks": {
+    "title": "Hook Groups",
+    "hint": "scripts + registration deployed together; Claude Code only in this round",
+    "addGroup": "Add group",
+    "create": "Create",
+    "namePlaceholder": "group name (e.g. my-guards)",
+    "descriptionPlaceholder": "description (optional)",
+    "groupAdded": "Created {{name}}",
+    "empty": "No hook groups yet. Create a group, add script files and event registrations, then deploy.",
+    "filesUnit": "files",
+    "regsUnit": "registrations",
+    "filePlaceholder": "path of a script file to register (copied into the group)",
+    "addFile": "Add file",
+    "matcherPlaceholder": "matcher (optional)",
+    "commandPlaceholder": "command (bare script name runs from the group dir)",
+    "addRegistration": "Add registration",
+    "remove": "remove",
+    "deployed": "Deployed {{name}} to Claude Code",
+    "undeployed": "Undeployed {{name}}",
+    "deleted": "Deleted {{name}}"
+  },
   "help": {
     "eyebrow": "Guide",
     "title": "Quick Start for Skills Manager",

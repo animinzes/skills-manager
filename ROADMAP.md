@@ -1,6 +1,6 @@
 # Agent Manager 开发计划（详细版）
 
-> 版本：v2.3（2026-10-22 更新：M7 第一版完成——subagent（v10）之后补齐斜杠命令与记忆文件（v12）；M7 二版 MCP/hooks 未动）
+> 版本：v2.4（2026-10-22 更新：M7 全部完成——subagent〔v10〕、斜杠命令+记忆文件〔v12〕、MCP 五端合并式写入〔v13〕、hooks 成组部署〔v14，首版仅 Claude Code〕；下一步 M8）
 > 分支纪律沿用：`main` 镜像上游，`skill-control` 为个人工作分支，每批次短特性分支 + 可逆提交，不建 PR
 > 工作量标记：S = 半天内，M = 1~2 天，L = 3 天以上（含调试与测试）
 > 构建铁律：出 exe 必须走 `npm run skill-control:build`（裸 cargo build 的 exe 前端加载坏）；改前端后该命令会自动重跑 npm build
@@ -129,18 +129,18 @@
 **验收**：全库报告产出；locked 项在重扫后不变；一条清理建议从建议到确认到执行全程留痕可回滚。
 **风险**：M；分级建议规则先简单（来源+重复），避免过度智能。
 
-## M7 机制扩展（skill 之外的资产）◐ 第一版完成（2026-09-29：subagent 管理 v10 schema；2026-10-22：斜杠命令 + 记忆文件 v12 schema `slash_commands`/`slash_command_targets`/`memory_files`，中央库 `commands/` 与 `memories/<tool>/` 目录，Claude Code commands + Codex prompts + OpenCode commands 三端命令收编部署，五端记忆文件只登记+快照+刷新、无部署函数（不代写铁律），新"斜杠命令"页面含记忆文件区，530 测试全绿）
+## M7 机制扩展（skill 之外的资产）✅ 完成（2026-09-29：subagent 管理 v10；2026-10-22：斜杠命令+记忆文件 v12、MCP 合并式写入五端 v13、hooks 成组部署 v14——toml_edit 保注释、serde_json preserve_order 保键序、写前备份入登记库、previous/rendered 全量留痕、漂移拒绝回滚；hooks 首版仅 Claude Code，AGY 待其文件约定摸清后加适配器；546 测试全绿）
 
 **目标**：从技能管理器长成 agent 扩展资产管理器。
 
 任务（第一版，纯文件四类）：
-1. 资产模型扩展：skill 之外登记子代理定义（.md/.toml）、斜杠命令（commands/prompts）、记忆文件（CLAUDE.md/AGENTS.md/GEMINI.md 只登记备份）
-2. 各端发现目录接入这些机制的扫描与部署（矩阵视图加维度）
-3. 记忆文件的特殊规则：只读登记 + 快照备份，永不代写内容
+1. ✅ 资产模型扩展：skill 之外登记子代理定义（.md/.toml）、斜杠命令（commands/prompts）、记忆文件（CLAUDE.md/AGENTS.md/GEMINI.md 只登记备份）
+2. ✅ 各端发现目录接入这些机制的扫描与部署（矩阵视图加维度）
+3. ✅ 记忆文件的特殊规则：只读登记 + 快照备份，永不代写内容
 
 任务（第二版，配置写入类）：
-4. MCP 配置合并式写入五端（claude.json / config.toml / zcode cli\config.json / gemini settings.json / opencode.json），每端一个成功 + 一个回滚用例
-5. hooks 成组部署（脚本 + 注册一起）
+4. ✅ MCP 配置合并式写入五端（claude.json / config.toml / zcode cli\config.json / gemini settings.json / opencode.json），每端一个成功 + 一个回滚用例
+5. ✅ hooks 成组部署（脚本 + 注册一起；首版仅 Claude Code）
 
 后置：插件市场注册表管理、permissions、statusline、Gemini commands（本机未用）。
 

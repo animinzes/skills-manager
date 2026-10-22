@@ -264,8 +264,9 @@ pub struct MemorySlotDto {
     pub source_path: String,
     pub exists_on_disk: bool,
     pub registered: bool,
-    /// Some(true) when registered and the live file differs from the
-    /// snapshot; Some(false) when they match; None when not registered.
+    /// Some(true) when registered and the live file is readable and differs
+    /// from the snapshot; Some(false) when it matches (or is gone — the
+    /// exists_on_disk flag owns that signal); None when not registered.
     pub source_changed: Option<bool>,
     pub record: Option<MemoryFileRecord>,
 }
@@ -277,11 +278,14 @@ pub fn memory_slots(store: &SkillStore) -> Result<Vec<MemorySlotDto>> {
         .map(|a| {
             let record = records.iter().find(|r| r.tool == a.tool_key).cloned();
             // Compare against the recorded source (what refresh re-snapshots),
-            // so the badge and the refresh action can never disagree.
+            // so the badge and the refresh action can never disagree. A source
+            // we cannot read but that is still present counts as changed; a
+            // missing one is reported through exists_on_disk instead.
             let source_changed = record.as_ref().map(|r| {
-                file_hash(Path::new(&r.source_path))
-                    .map(|h| Some(h) != r.content_hash)
-                    .unwrap_or(true)
+                match file_hash(Path::new(&r.source_path)) {
+                    Ok(h) => Some(h) != r.content_hash,
+                    Err(_) => !Path::new(&r.source_path).is_file(),
+                }
             });
             MemorySlotDto {
                 tool_key: a.tool_key.to_string(),

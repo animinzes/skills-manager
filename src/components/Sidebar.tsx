@@ -20,6 +20,7 @@ import {
   Users,
   Terminal,
   Plug,
+  Zap,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -175,6 +176,7 @@ export function Sidebar() {
     { name: t("subagents.title"), path: "/subagents", icon: Users },
     { name: t("commands.title"), path: "/commands", icon: Terminal },
     { name: t("mcp.title"), path: "/mcp", icon: Plug },
+    { name: t("hooks.title"), path: "/hooks", icon: Zap },
     { name: t("sidebar.installSkills"), path: "/install", icon: Download },
     { name: t("sidebar.backup"), path: "/backup", icon: CloudUpload },
   ];

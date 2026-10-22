@@ -18,6 +18,7 @@ import { Registry } from "./views/Registry";
 import { Subagents } from "./views/Subagents";
 import { Commands } from "./views/Commands";
 import { Mcp } from "./views/Mcp";
+import { Hooks } from "./views/Hooks";
 
 function ThemedToaster() {
   const { resolvedTheme } = useThemeContext();
@@ -55,6 +56,7 @@ function App() {
               <Route path="/subagents" element={<Subagents />} />
               <Route path="/commands" element={<Commands />} />
               <Route path="/mcp" element={<Mcp />} />
+              <Route path="/hooks" element={<Hooks />} />
               <Route path="/project/:id" element={<ProjectDetail />} />
               <Route path="/settings" element={<Settings />} />
             </Route>

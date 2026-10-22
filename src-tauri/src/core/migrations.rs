@@ -2,7 +2,7 @@ use anyhow::{bail, Context, Result};
 use rusqlite::Connection;
 
 /// Current schema version. Bump this when adding a new migration.
-const LATEST_VERSION: u32 = 13;
+const LATEST_VERSION: u32 = 14;
 
 /// Run all pending migrations on the database.
 ///
@@ -60,6 +60,7 @@ fn migrate_step(conn: &Connection, from_version: u32) -> Result<()> {
         10 => migrate_v10_to_v11(conn),
         11 => migrate_v11_to_v12(conn),
         12 => migrate_v12_to_v13(conn),
+        13 => migrate_v13_to_v14(conn),
         _ => bail!("unknown migration version: {from_version}"),
     }
 }
@@ -556,6 +557,52 @@ fn migrate_v12_to_v13(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v13 → v14: hook groups — scripts plus the registration entries that wire
+/// them into a host. Claude Code only in this round: files copy to
+/// `~/.claude/hooks/<group>/` and registrations merge into the `hooks` key
+/// of `~/.claude/settings.json`; rollback removes exactly what was written.
+fn migrate_v13_to_v14(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS hook_groups (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS hook_group_files (
+            group_id TEXT NOT NULL REFERENCES hook_groups(id) ON DELETE CASCADE,
+            file_name TEXT NOT NULL,
+            central_path TEXT NOT NULL,
+            content_hash TEXT,
+            PRIMARY KEY(group_id, file_name)
+        );
+
+        CREATE TABLE IF NOT EXISTS hook_group_registrations (
+            group_id TEXT NOT NULL REFERENCES hook_groups(id) ON DELETE CASCADE,
+            event TEXT NOT NULL,
+            matcher TEXT,
+            command TEXT NOT NULL,
+            PRIMARY KEY(group_id, event, command)
+        );
+
+        CREATE TABLE IF NOT EXISTS hook_group_targets (
+            group_id TEXT NOT NULL REFERENCES hook_groups(id) ON DELETE CASCADE,
+            tool TEXT NOT NULL,
+            hooks_dir TEXT NOT NULL,
+            settings_path TEXT NOT NULL,
+            backup_path TEXT,
+            written_json TEXT NOT NULL,
+            synced_at INTEGER NOT NULL,
+            PRIMARY KEY(group_id, tool)
+        );
+        ",
+    )?;
+    Ok(())
+}
+
 // ── Helpers ──
 
 fn add_column_if_missing(
@@ -737,6 +784,39 @@ mod tests {
             .unwrap();
         assert!(tables.contains(&"mcp_servers".to_string()));
         assert!(tables.contains(&"mcp_server_targets".to_string()));
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+                .unwrap(),
+            LATEST_VERSION
+        );
+    }
+
+    #[test]
+    fn test_v13_database_upgrades_to_hook_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+
+        run_migrations(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE hook_groups;
+             DROP TABLE hook_group_files;
+             DROP TABLE hook_group_registrations;
+             DROP TABLE hook_group_targets;
+             PRAGMA user_version = 13;",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table'")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(tables.contains(&"hook_groups".to_string()));
+        assert!(tables.contains(&"hook_group_targets".to_string()));
         assert_eq!(
             conn.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
                 .unwrap(),

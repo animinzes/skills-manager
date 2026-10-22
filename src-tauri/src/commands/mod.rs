@@ -3,6 +3,7 @@ pub mod agent_workspace;
 pub mod browse;
 pub mod git_backup;
 pub mod governance;
+pub mod hook_groups;
 pub mod mcp_config;
 pub mod memory_files;
 pub mod projects;

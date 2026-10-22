@@ -835,6 +835,92 @@ export const undeployMcpServer = (serverId: string, tool: string) =>
 export const deleteMcpServer = (serverId: string) =>
   invoke<void>("delete_mcp_server", { serverId });
 
+// ── Hook groups ──
+
+export interface HookGroupRecord {
+  id: string;
+  name: string;
+  description: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface HookGroupFile {
+  file_name: string;
+  central_path: string;
+  content_hash: string | null;
+}
+
+export interface HookGroupRegistration {
+  event: string;
+  matcher: string | null;
+  command: string;
+}
+
+export interface HookGroupTarget {
+  tool: string;
+  hooks_dir: string;
+  settings_path: string;
+  synced_at: number;
+}
+
+export const HOOK_EVENTS = [
+  "PreToolUse",
+  "PostToolUse",
+  "UserPromptSubmit",
+  "Notification",
+  "Stop",
+  "SubagentStop",
+  "PreCompact",
+  "SessionStart",
+  "SessionEnd",
+] as const;
+
+export const getHookGroups = () => invoke<HookGroupRecord[]>("get_hook_groups");
+
+export const getHookGroupFiles = (groupId: string) =>
+  invoke<HookGroupFile[]>("get_hook_group_files", { groupId });
+
+export const getHookGroupRegistrations = (groupId: string) =>
+  invoke<HookGroupRegistration[]>("get_hook_group_registrations", { groupId });
+
+export const getHookGroupTargets = (groupId: string) =>
+  invoke<HookGroupTarget[]>("get_hook_group_targets", { groupId });
+
+export const addHookGroup = (name: string, description: string | null) =>
+  invoke<HookGroupRecord>("add_hook_group", { name, description });
+
+export const addHookGroupFile = (groupId: string, sourcePath: string) =>
+  invoke<HookGroupFile>("add_hook_group_file", { groupId, sourcePath });
+
+export const addHookGroupRegistration = (
+  groupId: string,
+  event: string,
+  matcher: string | null,
+  command: string
+) =>
+  invoke<HookGroupRegistration>("add_hook_group_registration", {
+    groupId,
+    event,
+    matcher,
+    command,
+  });
+
+export const removeHookGroupRegistration = (groupId: string, event: string, command: string) =>
+  invoke<void>("remove_hook_group_registration", { groupId, event, command });
+
+export const removeHookGroupFile = (groupId: string, fileName: string) =>
+  invoke<void>("remove_hook_group_file", { groupId, fileName });
+
+export const deployHookGroup = (groupId: string, tool: string) =>
+  invoke<void>("deploy_hook_group", { groupId, tool });
+
+export const undeployHookGroup = (groupId: string, tool: string) =>
+  invoke<void>("undeploy_hook_group", { groupId, tool });
+
+export const deleteHookGroup = (groupId: string) =>
+  invoke<void>("delete_hook_group", { groupId });
+
 // ── Scan ──
 
 export const scanLocalSkills = () => invoke<ScanResult>("scan_local_skills");
